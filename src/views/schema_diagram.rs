@@ -6,6 +6,23 @@ use crate::schema::SharedStruct;
 use crate::session::EnumConversion;
 use crate::theme::CatppuccinMocha;
 
+const EDGE_PALETTE: &[Color32] = &[
+    CatppuccinMocha::BLUE,
+    CatppuccinMocha::MAUVE,
+    CatppuccinMocha::GREEN,
+    CatppuccinMocha::PEACH,
+    CatppuccinMocha::PINK,
+    CatppuccinMocha::TEAL,
+    CatppuccinMocha::YELLOW,
+    CatppuccinMocha::SKY,
+    CatppuccinMocha::RED,
+    CatppuccinMocha::LAVENDER,
+    CatppuccinMocha::MAROON,
+    CatppuccinMocha::SAPPHIRE,
+    CatppuccinMocha::FLAMINGO,
+    CatppuccinMocha::ROSEWATER,
+];
+
 /// A node in the diagram representing a struct or enum
 #[derive(Clone)]
 struct DiagramNode {
@@ -598,6 +615,15 @@ impl SchemaDiagramView {
         let clip = painter.clip_rect();
         painter.set_clip_rect(canvas_rect);
 
+        // Precompute edge colors: child node border/header tint + parent field highlight
+        let mut node_edge_color: BTreeMap<String, Color32> = BTreeMap::new();
+        let mut field_edge_color: BTreeMap<(String, String), Color32> = BTreeMap::new();
+        for (ei, edge) in self.edges.iter().enumerate() {
+            let base = EDGE_PALETTE[ei % EDGE_PALETTE.len()];
+            node_edge_color.entry(edge.to.clone()).or_insert(base);
+            field_edge_color.entry((edge.from.clone(), edge.label.clone())).or_insert(base);
+        }
+
         // Draw edges first (behind nodes)
         for (ei, edge) in self.edges.iter().enumerate() {
             self.draw_edge(&painter, canvas_rect, edge, ei);
@@ -606,7 +632,7 @@ impl SchemaDiagramView {
         // Draw nodes
         let hover_world = pointer_pos.map(|p| self.screen_to_world(p, canvas_rect));
         for node in &self.nodes {
-            self.draw_node(&painter, canvas_rect, node, hover_world);
+            self.draw_node(&painter, canvas_rect, node, hover_world, &node_edge_color, &field_edge_color);
         }
 
         // Restore clip
@@ -657,23 +683,6 @@ impl SchemaDiagramView {
             return;
         };
 
-        // Cycle through Catppuccin Mocha accent colors for each edge
-        const EDGE_PALETTE: &[Color32] = &[
-            CatppuccinMocha::BLUE,
-            CatppuccinMocha::MAUVE,
-            CatppuccinMocha::GREEN,
-            CatppuccinMocha::PEACH,
-            CatppuccinMocha::PINK,
-            CatppuccinMocha::TEAL,
-            CatppuccinMocha::YELLOW,
-            CatppuccinMocha::SKY,
-            CatppuccinMocha::RED,
-            CatppuccinMocha::LAVENDER,
-            CatppuccinMocha::MAROON,
-            CatppuccinMocha::SAPPHIRE,
-            CatppuccinMocha::FLAMINGO,
-            CatppuccinMocha::ROSEWATER,
-        ];
         let base_color = EDGE_PALETTE[index % EDGE_PALETTE.len()];
         let edge_color = Color32::from_rgba_premultiplied(
             base_color.r(),
@@ -761,6 +770,8 @@ impl SchemaDiagramView {
         canvas_rect: Rect,
         node: &DiagramNode,
         hover_world: Option<Pos2>,
+        node_edge_color: &BTreeMap<String, Color32>,
+        field_edge_color: &BTreeMap<(String, String), Color32>,
     ) {
         let screen_pos = self.world_to_screen(node.pos, canvas_rect);
         let screen_size = node.size * self.zoom;
@@ -782,10 +793,15 @@ impl SchemaDiagramView {
         } else {
             CatppuccinMocha::SURFACE0
         };
-        let border_color = match node.kind {
-            NodeKind::Struct if node.is_shared => CatppuccinMocha::BLUE,
-            NodeKind::Struct => CatppuccinMocha::SURFACE2,
-            NodeKind::Enum => CatppuccinMocha::MAUVE,
+        let incoming_color = node_edge_color.get(&node.name);
+        let border_color = if let Some(&c) = incoming_color {
+            c
+        } else {
+            match node.kind {
+                NodeKind::Struct if node.is_shared => CatppuccinMocha::BLUE,
+                NodeKind::Struct => CatppuccinMocha::SURFACE2,
+                NodeKind::Enum => CatppuccinMocha::MAUVE,
+            }
         };
 
         let corner = 8.0 * self.zoom;
@@ -801,7 +817,6 @@ impl SchemaDiagramView {
         let header_height = 32.0 * self.zoom;
         let header_rect = Rect::from_min_size(screen_pos, vec2(screen_size.x, header_height));
 
-        // Header background
         let header_bg = match node.kind {
             NodeKind::Struct if node.is_shared => Color32::from_rgba_premultiplied(137, 180, 250, 25),
             NodeKind::Struct => Color32::from_rgba_premultiplied(69, 71, 90, 180),
@@ -889,12 +904,18 @@ impl SchemaDiagramView {
                 );
             } else {
                 // Struct field — name : type
+                // Use edge color if this field has an outgoing edge
+                let field_key = (node.name.clone(), name.clone());
+                let edge_col = field_edge_color.get(&field_key);
+                let name_col = if let Some(&c) = edge_col { c } else { CatppuccinMocha::SUBTEXT0 };
+                let type_col = if let Some(&c) = edge_col { c } else { *color };
+
                 painter.text(
                     pos2(screen_pos.x + 12.0 * self.zoom, y),
                     egui::Align2::LEFT_TOP,
                     name,
                     field_font.clone(),
-                    CatppuccinMocha::SUBTEXT0,
+                    name_col,
                 );
 
                 if !typ.is_empty() {
@@ -903,7 +924,7 @@ impl SchemaDiagramView {
                         egui::Align2::RIGHT_TOP,
                         typ,
                         type_font.clone(),
-                        *color,
+                        type_col,
                     );
                 }
             }
