@@ -349,6 +349,9 @@ impl JvApp {
             }
             ui.add_space(4.0);
 
+            let mut to_remove = None;
+            let mut toggled: Option<usize> = None;
+
             if let Some(loaded) = &self.current_session {
                 let mut files: Vec<(usize, String)> = loaded
                     .session
@@ -359,10 +362,6 @@ impl JvApp {
                     .collect();
                 files.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
 
-                let mut to_remove = None;
-                let mut toggled: Option<usize> = None;
-                let mut clicked_file: Option<usize> = None;
-
                 egui::ScrollArea::vertical()
                     .id_salt("file_list")
                     .show(ui, |ui| {
@@ -370,15 +369,32 @@ impl JvApp {
                             let is_disabled = self.disabled_files.contains(idx);
 
                             let row_id = ui.id().with(("file_row", idx));
-                            let prev_rect = ui.ctx().data(|d| d.get_temp::<egui::Rect>(row_id));
-                            let hovered = prev_rect
-                                .map(|r| ui.rect_contains_pointer(r))
-                                .unwrap_or(false);
+                            let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
 
-                            let bg = if hovered {
+                            let bg = if is_hovered {
                                 egui::Color32::from_rgba_premultiplied(40, 40, 55, 255)
                             } else {
                                 egui::Color32::TRANSPARENT
+                            };
+
+                            let eye_icon = if is_disabled {
+                                egui_phosphor::regular::EYE_CLOSED
+                            } else {
+                                egui_phosphor::regular::EYE
+                            };
+                            let eye_color = if is_disabled {
+                                CatppuccinMocha::SURFACE2
+                            } else if is_hovered {
+                                CatppuccinMocha::GREEN
+                            } else {
+                                CatppuccinMocha::OVERLAY0
+                            };
+                            let text_color = if is_disabled {
+                                CatppuccinMocha::OVERLAY0
+                            } else if is_hovered {
+                                CatppuccinMocha::TEXT
+                            } else {
+                                CatppuccinMocha::SUBTEXT0
                             };
 
                             let r = egui::Frame::new()
@@ -387,106 +403,87 @@ impl JvApp {
                                 .inner_margin(egui::Margin::symmetric(8, 3))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        // Toggle checkbox
-                                        let mut enabled = !is_disabled;
-                                        if ui.checkbox(&mut enabled, "").changed() {
-                                            toggled = Some(*idx);
-                                        }
-
-                                        let text_color = if is_disabled {
-                                            CatppuccinMocha::OVERLAY0
-                                        } else if hovered {
-                                            CatppuccinMocha::TEXT
-                                        } else {
-                                            CatppuccinMocha::SUBTEXT0
-                                        };
-                                        let file_r = ui.add(
-                                            egui::Label::new(
-                                                {
-                                                    let rt = RichText::new(filename)
-                                                        .color(text_color)
-                                                        .size(12.0);
-                                                    if is_disabled { rt.strikethrough() } else { rt }
-                                                },
-                                            )
-                                            .sense(egui::Sense::click()),
-                                        );
-                                        if file_r.clicked() {
-                                            clicked_file = Some(*idx);
-                                        }
-
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if hovered {
-                                                let rm = ui.add(
-                                                    egui::Button::new(
-                                                        RichText::new(regular::X_CIRCLE)
-                                                            .color(if ui.rect_contains_pointer(ui.min_rect()) {
-                                                                CatppuccinMocha::RED
-                                                            } else {
-                                                                CatppuccinMocha::SURFACE2
-                                                            })
-                                                            .size(13.0),
-                                                    )
-                                                    .frame(false),
-                                                );
-                                                if rm.on_hover_text("Remove file").clicked() {
-                                                    to_remove = Some(*idx);
-                                                }
+                                        // Trash icon on left (only on hover)
+                                        if is_hovered {
+                                            let trash_id = ui.id().with(("trash", idx));
+                                            let trash_hovered = ui.ctx().data(|d| d.get_temp::<bool>(trash_id)).unwrap_or(false);
+                                            let trash_color = if trash_hovered {
+                                                CatppuccinMocha::RED
+                                            } else {
+                                                CatppuccinMocha::SURFACE2
+                                            };
+                                            let rm = ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(regular::TRASH)
+                                                        .color(trash_color)
+                                                        .size(12.0),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            );
+                                            ui.ctx().data_mut(|d| d.insert_temp(trash_id, rm.hovered()));
+                                            if rm.on_hover_text("Remove file").clicked() {
+                                                to_remove = Some(*idx);
                                             }
-                                        });
+                                        }
+
+                                        // Eye toggle icon
+                                        ui.label(
+                                            RichText::new(eye_icon)
+                                                .color(eye_color)
+                                                .size(13.0),
+                                        );
+                                        // Filename
+                                        ui.label(
+                                            RichText::new(filename)
+                                                .color(text_color)
+                                                .size(12.0),
+                                        );
                                     });
-                                });
+                                })
+                                .response
+                                .interact(egui::Sense::click());
 
-                            let row_rect = r.response.rect;
-                            ui.ctx().data_mut(|d| d.insert_temp(row_id, row_rect));
-                        }
-                    });
+                            ui.ctx().data_mut(|d| d.insert_temp(row_id, r.hovered()));
 
-                // Handle toggle
-                if let Some(idx) = toggled {
-                    if self.disabled_files.contains(&idx) {
-                        self.disabled_files.remove(&idx);
-                    } else {
-                        self.disabled_files.insert(idx);
-                    }
-                    self.rebuild_schema();
-                    self.code_view.invalidate();
-                    self.shared_browser_view.invalidate();
-                    self.schema_diagram_view.invalidate();
-                    self.browser_view.invalidate();
-                }
-
-                // Handle click — in Jv mode, navigate browser to file
-                if let Some(idx) = clicked_file {
-                    self.selected_file_index = idx;
-                    if self.active_mode == AppMode::Jv {
-                        if let Some(loaded) = &self.current_session {
-                            if let Some((name, _)) = loaded.parsed_files.get(idx) {
-                                let display = name.strip_suffix(".json").unwrap_or(name).to_string();
-                                self.browser_view.navigate_to_file(&display, &loaded.parsed_files);
+                            // Click anywhere on row toggles the file
+                            if r.clicked() {
+                                toggled = Some(*idx);
                             }
                         }
-                    }
-                }
+                    });
+            }
 
-                if let Some(idx) = to_remove {
-                    if let Some(loaded) = &mut self.current_session {
-                        loaded.remove_file(idx);
-                        self.session_manager.update_session(&loaded.session);
-                        // Clean up disabled_files indices
-                        self.disabled_files.remove(&idx);
-                        let new_disabled: std::collections::BTreeSet<usize> = self.disabled_files
-                            .iter()
-                            .map(|&i| if i > idx { i - 1 } else { i })
-                            .collect();
-                        self.disabled_files = new_disabled;
-                        if self.selected_file_index >= loaded.session.files.len()
-                            && !loaded.session.files.is_empty()
-                        {
-                            self.selected_file_index = loaded.session.files.len() - 1;
-                        }
-                        self.rebuild_schema();
+            // Handle toggle (outside borrow of current_session)
+            if let Some(idx) = toggled {
+                if self.disabled_files.contains(&idx) {
+                    self.disabled_files.remove(&idx);
+                } else {
+                    self.disabled_files.insert(idx);
+                }
+                self.rebuild_schema();
+                self.code_view.invalidate();
+                self.shared_browser_view.invalidate();
+                self.schema_diagram_view.invalidate();
+                self.browser_view.invalidate();
+            }
+
+            if let Some(idx) = to_remove {
+                if let Some(loaded) = &mut self.current_session {
+                    loaded.remove_file(idx);
+                    self.session_manager.update_session(&loaded.session);
+                    // Clean up disabled_files indices
+                    self.disabled_files.remove(&idx);
+                    let new_disabled: std::collections::BTreeSet<usize> = self.disabled_files
+                        .iter()
+                        .map(|&i| if i > idx { i - 1 } else { i })
+                        .collect();
+                    self.disabled_files = new_disabled;
+                    if self.selected_file_index >= loaded.session.files.len()
+                        && !loaded.session.files.is_empty()
+                    {
+                        self.selected_file_index = loaded.session.files.len() - 1;
                     }
+                    self.rebuild_schema();
                 }
             }
         });
@@ -676,7 +673,7 @@ impl JvApp {
             AppMode::Schema => {
                 let has_schema = self.current_session.as_ref()
                     .and_then(|l| l.schema.as_ref())
-                    .is_some_and(|s| !s.structs.is_empty());
+                    .is_some_and(|s| !s.structs.is_empty() || !s.unique_structs.is_empty());
                 if !has_schema {
                     ui.centered_and_justified(|ui| {
                         ui.label(
@@ -773,7 +770,7 @@ impl JvApp {
             AppMode::Code => {
                 let has_schema = self.current_session.as_ref()
                     .and_then(|l| l.schema.as_ref())
-                    .is_some_and(|s| !s.structs.is_empty());
+                    .is_some_and(|s| !s.structs.is_empty() || !s.unique_structs.is_empty());
                 if !has_schema {
                     ui.centered_and_justified(|ui| {
                         ui.label(
