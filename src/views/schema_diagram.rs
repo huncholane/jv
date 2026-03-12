@@ -54,6 +54,9 @@ pub struct SchemaDiagramView {
     initial_positions: Vec<Pos2>,
     initial_pan: Vec2,
     initial_zoom: f32,
+
+    // Set after rebuild to center on first render frame
+    needs_centering: bool,
 }
 
 impl SchemaDiagramView {
@@ -74,6 +77,7 @@ impl SchemaDiagramView {
             initial_positions: Vec::new(),
             initial_pan: Vec2::ZERO,
             initial_zoom: 1.0,
+            needs_centering: false,
         }
     }
 
@@ -306,12 +310,13 @@ impl SchemaDiagramView {
         // Layout nodes
         self.layout_nodes();
 
-        // Store initial state for reset
+        // Store initial state for reset (pan will be set on first render when canvas size is known)
         self.initial_positions = self.nodes.iter().map(|n| n.pos).collect();
         self.initial_pan = Vec2::ZERO;
         self.initial_zoom = 1.0;
         self.pan_offset = Vec2::ZERO;
         self.zoom = 1.0;
+        self.needs_centering = true;
 
         // Generate mermaid
         self.mermaid_code =
@@ -489,6 +494,28 @@ impl SchemaDiagramView {
             ui.allocate_painter(avail, egui::Sense::click_and_drag());
         let canvas_rect = response.rect;
 
+        // Center diagram on first frame after rebuild
+        if self.needs_centering && !self.nodes.is_empty() {
+            self.needs_centering = false;
+            let mut min = self.nodes[0].pos;
+            let mut max = self.nodes[0].pos + self.nodes[0].size;
+            for node in &self.nodes {
+                min.x = min.x.min(node.pos.x);
+                min.y = min.y.min(node.pos.y);
+                max.x = max.x.max(node.pos.x + node.size.x);
+                max.y = max.y.max(node.pos.y + node.size.y);
+            }
+            let content_w = (max.x - min.x) * self.zoom;
+            let content_h = (max.y - min.y) * self.zoom;
+            let canvas_size = canvas_rect.size();
+            // Center the content in the viewport
+            self.pan_offset = vec2(
+                (canvas_size.x - content_w) / 2.0 - min.x * self.zoom,
+                (canvas_size.y - content_h) / 2.0 - min.y * self.zoom,
+            );
+            self.initial_pan = self.pan_offset;
+        }
+
         // Handle zoom with scroll wheel
         if ui.rect_contains_pointer(canvas_rect) {
             let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
@@ -572,8 +599,8 @@ impl SchemaDiagramView {
         painter.set_clip_rect(canvas_rect);
 
         // Draw edges first (behind nodes)
-        for edge in &self.edges {
-            self.draw_edge(&painter, canvas_rect, edge);
+        for (ei, edge) in self.edges.iter().enumerate() {
+            self.draw_edge(&painter, canvas_rect, edge, ei);
         }
 
         // Draw nodes
@@ -622,7 +649,7 @@ impl SchemaDiagramView {
         }
     }
 
-    fn draw_edge(&self, painter: &egui::Painter, canvas_rect: Rect, edge: &DiagramEdge) {
+    fn draw_edge(&self, painter: &egui::Painter, canvas_rect: Rect, edge: &DiagramEdge, index: usize) {
         let from_node = self.nodes.iter().find(|n| n.name == edge.from);
         let to_node = self.nodes.iter().find(|n| n.name == edge.to);
 
@@ -630,47 +657,98 @@ impl SchemaDiagramView {
             return;
         };
 
-        let from_center = from.pos + from.size / 2.0;
-        let to_center = to.pos + to.size / 2.0;
-
-        // Find best connection points on node edges
-        let from_screen = self.world_to_screen(
-            edge_point(from.pos, from.size, to_center),
-            canvas_rect,
+        // Cycle through Catppuccin Mocha accent colors for each edge
+        const EDGE_PALETTE: &[Color32] = &[
+            CatppuccinMocha::BLUE,
+            CatppuccinMocha::MAUVE,
+            CatppuccinMocha::GREEN,
+            CatppuccinMocha::PEACH,
+            CatppuccinMocha::PINK,
+            CatppuccinMocha::TEAL,
+            CatppuccinMocha::YELLOW,
+            CatppuccinMocha::SKY,
+            CatppuccinMocha::RED,
+            CatppuccinMocha::LAVENDER,
+            CatppuccinMocha::MAROON,
+            CatppuccinMocha::SAPPHIRE,
+            CatppuccinMocha::FLAMINGO,
+            CatppuccinMocha::ROSEWATER,
+        ];
+        let base_color = EDGE_PALETTE[index % EDGE_PALETTE.len()];
+        let edge_color = Color32::from_rgba_premultiplied(
+            base_color.r(),
+            base_color.g(),
+            base_color.b(),
+            140,
         );
-        let to_screen = self.world_to_screen(
-            edge_point(to.pos, to.size, from_center),
-            canvas_rect,
-        );
+        let stroke = egui::Stroke::new(1.5 * self.zoom, edge_color);
+        let bubble_radius = 4.0 * self.zoom;
+        let corner_inset = 10.0; // world-space inset from top-left corner
 
-        let edge_color = Color32::from_rgba_premultiplied(137, 180, 250, 100);
-        painter.line_segment(
-            [from_screen, to_screen],
-            egui::Stroke::new(1.5 * self.zoom, edge_color),
-        );
+        // Exit: right side of parent, aligned to the field row that references the child
+        let field_y_offset = from
+            .fields
+            .iter()
+            .position(|(name, _, _)| name == &edge.label)
+            .map(|i| 32.0 + 6.0 + i as f32 * 22.0 + 11.0) // header + padding + row center
+            .unwrap_or(from.size.y / 2.0);
+        let from_world = pos2(from.pos.x + from.size.x, from.pos.y + field_y_offset);
+        // Enter: top-left corner of child (inset slightly)
+        let to_world = pos2(to.pos.x + corner_inset, to.pos.y);
 
-        // Arrowhead
-        let dir = (to_screen - from_screen).normalized();
-        let arrow_size = 8.0 * self.zoom;
-        let perp = vec2(-dir.y, dir.x);
-        let tip = to_screen;
-        let left = tip - dir * arrow_size + perp * arrow_size * 0.4;
-        let right = tip - dir * arrow_size - perp * arrow_size * 0.4;
-        painter.add(egui::Shape::convex_polygon(
-            vec![tip, left, right],
-            edge_color,
-            egui::Stroke::NONE,
-        ));
+        let from_screen = self.world_to_screen(from_world, canvas_rect);
+        let to_screen = self.world_to_screen(to_world, canvas_rect);
 
-        // Edge label
+        // Cubic bezier: go right from source, then curve down into the top of target
+        let handle_dist_x = ((to_screen.x - from_screen.x).abs() * 0.5).max(40.0 * self.zoom);
+        let cp1 = pos2(from_screen.x + handle_dist_x, from_screen.y);
+        let cp2 = pos2(to_screen.x, to_screen.y - handle_dist_x);
+
+        // Sample the cubic bezier into line segments
+        let segments = 32;
+        let mut points = Vec::with_capacity(segments + 1);
+        for i in 0..=segments {
+            let t = i as f32 / segments as f32;
+            let it = 1.0 - t;
+            let x = it * it * it * from_screen.x
+                + 3.0 * it * it * t * cp1.x
+                + 3.0 * it * t * t * cp2.x
+                + t * t * t * to_screen.x;
+            let y = it * it * it * from_screen.y
+                + 3.0 * it * it * t * cp1.y
+                + 3.0 * it * t * t * cp2.y
+                + t * t * t * to_screen.y;
+            points.push(pos2(x, y));
+        }
+
+        // Draw the curve
+        for pair in points.windows(2) {
+            painter.line_segment([pair[0], pair[1]], stroke);
+        }
+
+        // Bubble at the source (right side of parent)
+        painter.circle_filled(from_screen, bubble_radius, edge_color);
+
+        // Bubble at the target (top-left of child)
+        painter.circle_filled(to_screen, bubble_radius, edge_color);
+
+        // Edge label near the midpoint of the curve
+        let t = 0.5f32;
+        let it = 0.5f32;
         let mid = pos2(
-            (from_screen.x + to_screen.x) / 2.0,
-            (from_screen.y + to_screen.y) / 2.0,
+            it * it * it * from_screen.x
+                + 3.0 * it * it * t * cp1.x
+                + 3.0 * it * t * t * cp2.x
+                + t * t * t * to_screen.x,
+            it * it * it * from_screen.y
+                + 3.0 * it * it * t * cp1.y
+                + 3.0 * it * t * t * cp2.y
+                + t * t * t * to_screen.y,
         );
         let font = egui::FontId::proportional(10.0 * self.zoom);
         painter.text(
-            mid,
-            egui::Align2::CENTER_CENTER,
+            mid + vec2(0.0, -8.0 * self.zoom),
+            egui::Align2::CENTER_BOTTOM,
             &edge.label,
             font,
             CatppuccinMocha::OVERLAY0,
@@ -831,34 +909,6 @@ impl SchemaDiagramView {
             }
         }
     }
-}
-
-/// Find the point on the edge of a rectangle closest to a target point
-fn edge_point(rect_pos: Pos2, rect_size: Vec2, target: Pos2) -> Pos2 {
-    let center = rect_pos + rect_size / 2.0;
-    let dir = target - center;
-
-    if dir.x.abs() < 0.001 && dir.y.abs() < 0.001 {
-        return center;
-    }
-
-    let half_w = rect_size.x / 2.0;
-    let half_h = rect_size.y / 2.0;
-
-    // Scale to find intersection with rectangle edge
-    let scale_x = if dir.x.abs() > 0.001 {
-        half_w / dir.x.abs()
-    } else {
-        f32::MAX
-    };
-    let scale_y = if dir.y.abs() > 0.001 {
-        half_h / dir.y.abs()
-    } else {
-        f32::MAX
-    };
-
-    let scale = scale_x.min(scale_y);
-    center + dir * scale
 }
 
 fn to_pascal_case(s: &str) -> String {
