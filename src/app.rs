@@ -1,0 +1,985 @@
+use egui::{self, RichText};
+
+use crate::schema::SchemaOverview;
+use crate::session::{LoadedSession, SessionManager};
+use crate::theme::CatppuccinMocha;
+use crate::views::{browser::BrowserView, code::CodeView, schema_diagram::SchemaDiagramView, shared_browser::SharedBrowserView, table::TableView};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AppMode {
+    Jv,
+    Schema,
+    Groups,
+    Code,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewTab {
+    Table,
+    Code,
+}
+
+pub struct JvApp {
+    session_manager: SessionManager,
+    current_session: Option<LoadedSession>,
+    selected_file_index: usize,
+    active_mode: AppMode,
+    active_tab: ViewTab,
+
+    // Views
+    table_view: TableView,
+    code_view: CodeView,
+    browser_view: BrowserView,
+    schema_diagram_view: SchemaDiagramView,
+    shared_browser_view: SharedBrowserView,
+
+    applied_threshold: f32,
+
+    // Track file changes
+    last_file_index: usize,
+    last_file_count: usize,
+
+    // Disabled (toggled-off) source files by index
+    disabled_files: std::collections::BTreeSet<usize>,
+
+    // UI state
+    new_session_name: String,
+    show_new_session_dialog: bool,
+    sidebar_width: f32,
+    theme_applied: bool,
+
+    // File drop handling
+    dropped_files: Vec<egui::DroppedFile>,
+
+    // FPS tracking
+    frame_times: Vec<f64>,
+    fps_display: f64,
+
+    // Async file dialog results
+    file_dialog_rx: Option<std::sync::mpsc::Receiver<FileDialogResult>>,
+}
+
+enum FileDialogResult {
+    Files(Vec<std::path::PathBuf>),
+    Directory(std::path::PathBuf),
+}
+
+impl JvApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load Phosphor icon font
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+
+        let mut manager = SessionManager::new();
+
+        // Auto-create a default session if none exist
+        let current = if manager.sessions.is_empty() {
+            let session = manager.create_session("Default Session");
+            Some(LoadedSession::new(session))
+        } else {
+            let session = manager.sessions[0].clone();
+            Some(LoadedSession::new(session))
+        };
+
+        let mut app = Self {
+            session_manager: manager,
+            current_session: current,
+            selected_file_index: 0,
+            active_mode: AppMode::Jv,
+            active_tab: ViewTab::Table,
+            table_view: TableView::new(),
+            code_view: CodeView::new(),
+            browser_view: BrowserView::new(),
+            schema_diagram_view: SchemaDiagramView::new(),
+            shared_browser_view: SharedBrowserView::new(),
+            applied_threshold: 0.0,
+            last_file_index: usize::MAX,
+            last_file_count: 0,
+            disabled_files: std::collections::BTreeSet::new(),
+            new_session_name: String::new(),
+            show_new_session_dialog: false,
+            sidebar_width: 240.0,
+            theme_applied: false,
+            dropped_files: Vec::new(),
+            frame_times: Vec::with_capacity(60),
+            fps_display: 0.0,
+            file_dialog_rx: None,
+        };
+        if let Some(loaded) = &app.current_session {
+            app.applied_threshold = loaded.session.jaccard_threshold;
+        }
+        tracing::info!("UI loaded");
+        app
+    }
+
+    /// Get only the enabled (non-disabled) parsed files
+    fn active_parsed_files(&self) -> Vec<(String, serde_json::Value)> {
+        let Some(loaded) = &self.current_session else {
+            return Vec::new();
+        };
+        loaded
+            .parsed_files
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.disabled_files.contains(i))
+            .map(|(_, f)| f.clone())
+            .collect()
+    }
+
+    fn rebuild_schema(&mut self) {
+        if let Some(loaded) = &mut self.current_session {
+            // Rebuild schema using only enabled files
+            let active: Vec<(String, serde_json::Value)> = loaded
+                .parsed_files
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !self.disabled_files.contains(i))
+                .map(|(_, f)| f.clone())
+                .collect();
+            if !active.is_empty() {
+                let threshold = loaded.session.jaccard_threshold;
+                loaded.schema = Some(SchemaOverview::infer(&active, threshold));
+            } else {
+                loaded.schema = None;
+            }
+            self.applied_threshold = loaded.session.jaccard_threshold;
+        }
+    }
+
+    fn import_file(&mut self, path: &std::path::Path) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let is_har = path.extension().is_some_and(|e| e == "har");
+            if is_har {
+                if let Ok(har_value) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let files = crate::har::extract_har_files(&har_value);
+                    if let Some(loaded) = &mut self.current_session {
+                        for (filename, value) in &files {
+                            let json_str =
+                                serde_json::to_string_pretty(value).unwrap_or_default();
+                            if loaded.add_file(filename, json_str).is_ok() {}
+                        }
+                        self.session_manager.update_session(&loaded.session);
+                        self.rebuild_schema();
+                    }
+                }
+            } else {
+                let path_str = path.to_string_lossy().to_string();
+                if let Some(loaded) = &mut self.current_session {
+                    if loaded.add_file(&path_str, content).is_ok() {
+                        self.session_manager.update_session(&loaded.session);
+                        self.rebuild_schema();
+                    }
+                }
+            }
+        }
+    }
+
+    fn import_directory(&mut self, dir: &std::path::Path) {
+        for entry in walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|e| e == "json" || e == "har") {
+                self.import_file(path);
+            }
+        }
+    }
+
+    fn show_sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            use egui_phosphor::regular;
+
+            // -- Session section --
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} ", regular::FOLDER_OPEN))
+                        .color(CatppuccinMocha::OVERLAY0)
+                        .size(12.0),
+                );
+                ui.label(
+                    RichText::new("SESSION")
+                        .color(CatppuccinMocha::OVERLAY0)
+                        .small()
+                        .strong(),
+                );
+            });
+            ui.add_space(4.0);
+
+            let session_names: Vec<String> = self
+                .session_manager
+                .sessions
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+
+            let current_name = self
+                .current_session
+                .as_ref()
+                .map(|s| s.session.name.clone())
+                .unwrap_or_default();
+
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("session_selector")
+                    .selected_text(&current_name)
+                    .width(ui.available_width() - 52.0)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in session_names.iter().enumerate() {
+                            if ui.selectable_label(name == &current_name, name).clicked() {
+                                let session = self.session_manager.sessions[i].clone();
+                                self.current_session = Some(LoadedSession::new(session));
+                                self.selected_file_index = 0;
+                                self.rebuild_schema();
+                            }
+                        }
+                    });
+
+                if ui.add(egui::Button::new(
+                    RichText::new(regular::PLUS).size(12.0),
+                ).frame(false)).on_hover_text("New Session").clicked() {
+                    self.show_new_session_dialog = true;
+                }
+                if ui.add(egui::Button::new(
+                    RichText::new(regular::TRASH).color(CatppuccinMocha::SURFACE2).size(12.0),
+                ).frame(false)).on_hover_text("Delete Session").clicked() {
+                    if let Some(loaded) = &self.current_session {
+                        let id = loaded.session.id.clone();
+                        self.session_manager.delete_session(&id);
+                        self.current_session = if self.session_manager.sessions.is_empty() {
+                            let s = self.session_manager.create_session("Default Session");
+                            Some(LoadedSession::new(s))
+                        } else {
+                            let s = self.session_manager.sessions[0].clone();
+                            Some(LoadedSession::new(s))
+                        };
+                        self.selected_file_index = 0;
+                        self.rebuild_schema();
+                    }
+                }
+            });
+
+            ui.add_space(16.0);
+
+            // -- Source files section (always visible) --
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} ", regular::FILES))
+                        .color(CatppuccinMocha::OVERLAY0)
+                        .size(12.0),
+                );
+                ui.label(
+                    RichText::new("SOURCE FILES")
+                        .color(CatppuccinMocha::OVERLAY0)
+                        .small()
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Import buttons
+                    if ui.add(egui::Button::new(
+                        RichText::new(regular::FOLDER_PLUS).size(12.0),
+                    ).frame(false)).on_hover_text("Import Directory").clicked() && self.file_dialog_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let ctx = ui.ctx().clone();
+                        std::thread::spawn(move || {
+                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                let _ = tx.send(FileDialogResult::Directory(dir));
+                                ctx.request_repaint();
+                            }
+                        });
+                        self.file_dialog_rx = Some(rx);
+                    }
+                    if ui.add(egui::Button::new(
+                        RichText::new(regular::FILE_PLUS).size(12.0),
+                    ).frame(false)).on_hover_text("Import File").clicked() && self.file_dialog_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let ctx = ui.ctx().clone();
+                        std::thread::spawn(move || {
+                            if let Some(paths) = rfd::FileDialog::new()
+                                .add_filter("JSON & HAR", &["json", "har"])
+                                .pick_files()
+                            {
+                                let _ = tx.send(FileDialogResult::Files(paths));
+                                ctx.request_repaint();
+                            }
+                        });
+                        self.file_dialog_rx = Some(rx);
+                    }
+                });
+            });
+
+            // Select all / none row
+            let file_count = self.current_session.as_ref().map(|l| l.session.files.len()).unwrap_or(0);
+            if file_count > 0 {
+                let all_enabled = self.disabled_files.is_empty();
+                let all_disabled = self.disabled_files.len() >= file_count;
+                ui.horizontal(|ui| {
+                    let all_color = if all_enabled { CatppuccinMocha::OVERLAY0 } else { CatppuccinMocha::SUBTEXT0 };
+                    let none_color = if all_disabled { CatppuccinMocha::OVERLAY0 } else { CatppuccinMocha::SUBTEXT0 };
+                    if ui.add(egui::Button::new(
+                        RichText::new("All").color(all_color).size(11.0),
+                    ).frame(false)).clicked() && !all_enabled {
+                        self.disabled_files.clear();
+                        self.rebuild_schema();
+                        self.code_view.invalidate();
+                        self.shared_browser_view.invalidate();
+                        self.schema_diagram_view.invalidate();
+                        self.browser_view.invalidate();
+                    }
+                    ui.label(RichText::new("·").color(CatppuccinMocha::SURFACE2).size(11.0));
+                    if ui.add(egui::Button::new(
+                        RichText::new("None").color(none_color).size(11.0),
+                    ).frame(false)).clicked() && !all_disabled {
+                        self.disabled_files = (0..file_count).collect();
+                        self.rebuild_schema();
+                        self.code_view.invalidate();
+                        self.shared_browser_view.invalidate();
+                        self.schema_diagram_view.invalidate();
+                        self.browser_view.invalidate();
+                    }
+                    ui.label(
+                        RichText::new(format!("{}/{}", file_count - self.disabled_files.len(), file_count))
+                            .color(CatppuccinMocha::OVERLAY0)
+                            .family(egui::FontFamily::Monospace)
+                            .size(10.0),
+                    );
+                });
+            }
+            ui.add_space(4.0);
+
+            if let Some(loaded) = &self.current_session {
+                let mut files: Vec<(usize, String)> = loaded
+                    .session
+                    .files
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (i, f.filename.clone()))
+                    .collect();
+                files.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+
+                let mut to_remove = None;
+                let mut toggled: Option<usize> = None;
+                let mut clicked_file: Option<usize> = None;
+
+                egui::ScrollArea::vertical()
+                    .id_salt("file_list")
+                    .show(ui, |ui| {
+                        for (idx, filename) in &files {
+                            let is_disabled = self.disabled_files.contains(idx);
+
+                            let row_id = ui.id().with(("file_row", idx));
+                            let prev_rect = ui.ctx().data(|d| d.get_temp::<egui::Rect>(row_id));
+                            let hovered = prev_rect
+                                .map(|r| ui.rect_contains_pointer(r))
+                                .unwrap_or(false);
+
+                            let bg = if hovered {
+                                egui::Color32::from_rgba_premultiplied(40, 40, 55, 255)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+
+                            let r = egui::Frame::new()
+                                .fill(bg)
+                                .corner_radius(6.0)
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        // Toggle checkbox
+                                        let mut enabled = !is_disabled;
+                                        if ui.checkbox(&mut enabled, "").changed() {
+                                            toggled = Some(*idx);
+                                        }
+
+                                        let text_color = if is_disabled {
+                                            CatppuccinMocha::OVERLAY0
+                                        } else if hovered {
+                                            CatppuccinMocha::TEXT
+                                        } else {
+                                            CatppuccinMocha::SUBTEXT0
+                                        };
+                                        let file_r = ui.add(
+                                            egui::Label::new(
+                                                {
+                                                    let rt = RichText::new(filename)
+                                                        .color(text_color)
+                                                        .size(12.0);
+                                                    if is_disabled { rt.strikethrough() } else { rt }
+                                                },
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        );
+                                        if file_r.clicked() {
+                                            clicked_file = Some(*idx);
+                                        }
+
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if hovered {
+                                                let rm = ui.add(
+                                                    egui::Button::new(
+                                                        RichText::new(regular::X_CIRCLE)
+                                                            .color(if ui.rect_contains_pointer(ui.min_rect()) {
+                                                                CatppuccinMocha::RED
+                                                            } else {
+                                                                CatppuccinMocha::SURFACE2
+                                                            })
+                                                            .size(13.0),
+                                                    )
+                                                    .frame(false),
+                                                );
+                                                if rm.on_hover_text("Remove file").clicked() {
+                                                    to_remove = Some(*idx);
+                                                }
+                                            }
+                                        });
+                                    });
+                                });
+
+                            let row_rect = r.response.rect;
+                            ui.ctx().data_mut(|d| d.insert_temp(row_id, row_rect));
+                        }
+                    });
+
+                // Handle toggle
+                if let Some(idx) = toggled {
+                    if self.disabled_files.contains(&idx) {
+                        self.disabled_files.remove(&idx);
+                    } else {
+                        self.disabled_files.insert(idx);
+                    }
+                    self.rebuild_schema();
+                    self.code_view.invalidate();
+                    self.shared_browser_view.invalidate();
+                    self.schema_diagram_view.invalidate();
+                    self.browser_view.invalidate();
+                }
+
+                // Handle click — in Jv mode, navigate browser to file
+                if let Some(idx) = clicked_file {
+                    self.selected_file_index = idx;
+                    if self.active_mode == AppMode::Jv {
+                        if let Some(loaded) = &self.current_session {
+                            if let Some((name, _)) = loaded.parsed_files.get(idx) {
+                                let display = name.strip_suffix(".json").unwrap_or(name).to_string();
+                                self.browser_view.navigate_to_file(&display, &loaded.parsed_files);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(idx) = to_remove {
+                    if let Some(loaded) = &mut self.current_session {
+                        loaded.remove_file(idx);
+                        self.session_manager.update_session(&loaded.session);
+                        // Clean up disabled_files indices
+                        self.disabled_files.remove(&idx);
+                        let new_disabled: std::collections::BTreeSet<usize> = self.disabled_files
+                            .iter()
+                            .map(|&i| if i > idx { i - 1 } else { i })
+                            .collect();
+                        self.disabled_files = new_disabled;
+                        if self.selected_file_index >= loaded.session.files.len()
+                            && !loaded.session.files.is_empty()
+                        {
+                            self.selected_file_index = loaded.session.files.len() - 1;
+                        }
+                        self.rebuild_schema();
+                    }
+                }
+            }
+        });
+    }
+
+    fn show_settings(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+
+                // Schema section
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{} Schema", regular::GRAPH))
+                            .color(CatppuccinMocha::TEXT)
+                            .size(14.0)
+                            .strong(),
+                    );
+                });
+                ui.add_space(8.0);
+
+                // Jaccard similarity slider
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Similarity threshold")
+                            .color(CatppuccinMocha::SUBTEXT0)
+                            .size(12.0),
+                    );
+                });
+                ui.add_space(2.0);
+                {
+                    let mut val = self
+                        .current_session
+                        .as_ref()
+                        .map(|l| l.session.jaccard_threshold)
+                        .unwrap_or(0.8);
+                    let response = ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::Slider::new(&mut val, 0.3..=1.0)
+                                .step_by(0.05)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        )
+                    }).inner;
+                    if let Some(loaded) = &mut self.current_session {
+                        loaded.session.jaccard_threshold = val;
+                    }
+                    let pending = (val - self.applied_threshold).abs() > f32::EPSILON;
+                    if pending && !response.dragged() {
+                        self.applied_threshold = val;
+                        self.session_manager.update_session(
+                            &self.current_session.as_ref().unwrap().session,
+                        );
+                        self.rebuild_schema();
+                        self.code_view.invalidate();
+                        self.shared_browser_view.invalidate();
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(
+                            "Controls how similar two object shapes must be to merge into the same struct. Higher values require more identical fields.",
+                        )
+                        .color(CatppuccinMocha::OVERLAY0)
+                        .size(11.0),
+                    );
+                });
+            });
+    }
+
+    fn show_main_content(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular;
+
+        // Mode switcher
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (mode, label, icon) in [
+                (AppMode::Jv, "jv", regular::BROWSERS),
+                (AppMode::Schema, "Schema", regular::GRAPH),
+                (AppMode::Groups, "Groups", regular::TREE_STRUCTURE),
+                (AppMode::Code, "Code", regular::CODE),
+                (AppMode::Settings, "Settings", regular::GEAR_SIX),
+            ] {
+                let selected = self.active_mode == mode;
+                let text_color = if selected {
+                    CatppuccinMocha::BLUE
+                } else {
+                    CatppuccinMocha::OVERLAY0
+                };
+
+                let btn = ui.add(
+                    egui::Button::new(
+                        RichText::new(format!(" {} {} ", icon, label))
+                            .color(text_color)
+                            .size(12.0),
+                    )
+                    .fill(if selected {
+                        CatppuccinMocha::SURFACE0
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .corner_radius(6.0),
+                );
+
+                if btn.clicked() && self.active_mode != mode {
+                    self.active_mode = mode;
+                    self.active_tab = match mode {
+                        AppMode::Jv => ViewTab::Table,
+                        AppMode::Schema => ViewTab::Table,
+                        AppMode::Groups => ViewTab::Table,
+                        AppMode::Code => ViewTab::Code,
+                        AppMode::Settings => ViewTab::Table,
+                    };
+                }
+            }
+        });
+        ui.add_space(2.0);
+
+        // Tab bar (conditional per mode)
+        let tabs: Vec<(ViewTab, &str, &str)> = match self.active_mode {
+            AppMode::Jv => vec![],
+            AppMode::Schema => vec![],
+            AppMode::Groups => vec![],
+            AppMode::Code => vec![],
+            AppMode::Settings => vec![],
+        };
+
+        if !tabs.is_empty() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (tab, label, icon) in &tabs {
+                    let selected = self.active_tab == *tab;
+                    let text_color = if selected {
+                        CatppuccinMocha::TEXT
+                    } else {
+                        CatppuccinMocha::OVERLAY0
+                    };
+
+                    let btn = ui.add(
+                        egui::Button::new(
+                            RichText::new(format!(" {} {} ", icon, label))
+                                .color(text_color)
+                                .size(13.0),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .corner_radius(6.0),
+                    );
+
+                    if selected {
+                        let r = btn.rect;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(r.left() + 8.0, r.bottom() - 2.0),
+                                egui::pos2(r.right() - 8.0, r.bottom()),
+                            ),
+                            1.0,
+                            CatppuccinMocha::BLUE,
+                        );
+                    }
+
+                    if btn.clicked() {
+                        self.active_tab = *tab;
+                    }
+                }
+            });
+        }
+
+        // Subtle divider under tabs
+        let sep_rect = ui.available_rect_before_wrap();
+        ui.painter().line_segment(
+            [
+                egui::pos2(sep_rect.left(), sep_rect.top()),
+                egui::pos2(sep_rect.right(), sep_rect.top()),
+            ],
+            egui::Stroke::new(1.0, CatppuccinMocha::SURFACE0),
+        );
+        ui.add_space(8.0);
+
+        // Content — routed by mode
+        match self.active_mode {
+            AppMode::Schema => {
+                let has_schema = self.current_session.as_ref()
+                    .and_then(|l| l.schema.as_ref())
+                    .is_some_and(|s| !s.structs.is_empty());
+                if !has_schema {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("Import files to see schema diagram")
+                                .color(CatppuccinMocha::OVERLAY0)
+                                .size(16.0),
+                        );
+                    });
+                    return;
+                }
+                let active_files = self.active_parsed_files();
+                let loaded = self.current_session.as_ref().unwrap();
+                let schema = loaded.schema.as_ref().unwrap();
+                let structs = schema.structs.clone();
+                let unique_structs = schema.unique_structs.clone();
+                let enum_conversions = loaded.session.enum_conversions.clone();
+                let hidden_fields = loaded.session.hidden_fields.clone();
+                self.schema_diagram_view.show(
+                    ui,
+                    &active_files,
+                    &structs,
+                    &unique_structs,
+                    &enum_conversions,
+                    &hidden_fields,
+                );
+            }
+            AppMode::Jv => {
+                let has_file = self
+                    .current_session
+                    .as_ref()
+                    .is_some_and(|l| !l.parsed_files.is_empty());
+
+                if !has_file {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "Import a JSON file to get started\n\nDrag & drop files here, or use the Import buttons in the sidebar",
+                            )
+                            .color(CatppuccinMocha::OVERLAY0)
+                            .size(16.0),
+                        );
+                    });
+                    return;
+                }
+
+                let loaded = self.current_session.as_ref().unwrap();
+                let file_idx = self.selected_file_index.min(loaded.parsed_files.len().saturating_sub(1));
+                let file_count = loaded.parsed_files.len();
+
+                // Invalidate only when files are added/removed (not on selection change)
+                if file_count != self.last_file_count {
+                    self.browser_view.invalidate();
+                    self.code_view.invalidate();
+                    self.schema_diagram_view.invalidate();
+                    self.last_file_count = file_count;
+                }
+                self.last_file_index = file_idx;
+
+                self.browser_view.show(ui, &loaded.parsed_files);
+
+                // Sync sidebar selection from browser's current file
+                if let Some(file_key) = self.browser_view.current_file_key(&loaded.parsed_files) {
+                    if let Some(idx) = loaded.parsed_files.iter().position(|(n, _)| {
+                        n.strip_suffix(".json").unwrap_or(n) == file_key
+                    }) {
+                        self.selected_file_index = idx;
+                    }
+                }
+            }
+            AppMode::Groups => {
+                let loaded = self.current_session.as_ref();
+                let has_schema = loaded
+                    .and_then(|l| l.schema.as_ref())
+                    .is_some_and(|s| !s.structs.is_empty() || !s.unique_structs.is_empty());
+                if !has_schema {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("Import multiple files to see shared types")
+                                .color(CatppuccinMocha::OVERLAY0)
+                                .size(16.0),
+                        );
+                    });
+                    return;
+                }
+
+                let active_files = self.active_parsed_files();
+                let loaded = self.current_session.as_ref().unwrap();
+                let schema = loaded.schema.as_ref().unwrap();
+                self.shared_browser_view.show(ui, schema, &active_files);
+            }
+            AppMode::Settings => {
+                self.show_settings(ui);
+            }
+            AppMode::Code => {
+                let has_schema = self.current_session.as_ref()
+                    .and_then(|l| l.schema.as_ref())
+                    .is_some_and(|s| !s.structs.is_empty());
+                if !has_schema {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("Import files to generate code")
+                                .color(CatppuccinMocha::OVERLAY0)
+                                .size(16.0),
+                        );
+                    });
+                    return;
+                }
+                let active_files = self.active_parsed_files();
+                let loaded = self.current_session.as_ref().unwrap();
+                let schema = loaded.schema.clone();
+                let prev_enums = loaded.session.enum_conversions.clone();
+                let prev_hidden_count = loaded.session.hidden_fields.len();
+                let loaded = self.current_session.as_mut().unwrap();
+                self.code_view.show(
+                    ui,
+                    &active_files,
+                    schema.as_ref(),
+                    &mut loaded.session.enum_conversions,
+                    &mut loaded.session.hidden_fields,
+                );
+                // Persist session if enum conversions or hidden fields changed
+                if loaded.session.enum_conversions != prev_enums
+                    || loaded.session.hidden_fields.len() != prev_hidden_count
+                {
+                    self.session_manager.update_session(&loaded.session);
+                }
+            }
+        }
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        // Collect dropped files
+        ctx.input(|i| {
+            for f in &i.raw.dropped_files {
+                self.dropped_files.push(f.clone());
+            }
+        });
+
+        // Process drops
+        let files: Vec<egui::DroppedFile> = self.dropped_files.drain(..).collect();
+        for file in files {
+            if let Some(path) = &file.path {
+                if path.is_dir() {
+                    self.import_directory(path);
+                } else if path.extension().is_some_and(|e| e == "json" || e == "har") {
+                    self.import_file(path);
+                }
+            } else if let Some(bytes) = &file.bytes {
+                let content = String::from_utf8_lossy(bytes).to_string();
+                let name = file.name.clone();
+                if let Some(loaded) = &mut self.current_session {
+                    if loaded.add_file(&name, content).is_ok() {
+                        self.session_manager.update_session(&loaded.session);
+                        self.rebuild_schema();
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl eframe::App for JvApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll async file dialog results
+        if let Some(rx) = &self.file_dialog_rx {
+            match rx.try_recv() {
+                Ok(result) => {
+                    match result {
+                        FileDialogResult::Files(paths) => {
+                            for path in paths {
+                                self.import_file(&path);
+                            }
+                        }
+                        FileDialogResult::Directory(dir) => {
+                            self.import_directory(&dir);
+                        }
+                    }
+                    self.file_dialog_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Dialog was cancelled
+                    self.file_dialog_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if !self.theme_applied {
+            CatppuccinMocha::apply(ctx);
+            ctx.style_mut(|style| {
+                style.spacing.scroll.floating = false;
+                style.spacing.scroll.bar_width = 8.0;
+                style.interaction.tooltip_delay = 0.0;
+            });
+            self.theme_applied = true;
+        }
+
+        // Boost scroll speed by scaling raw scroll events
+        ctx.input_mut(|input| {
+            for event in &mut input.events {
+                if let egui::Event::MouseWheel { delta, .. } = event {
+                    delta.y *= 3.0;
+                }
+            }
+        });
+
+        self.handle_dropped_files(ctx);
+
+        // FPS tracking (rolling average of last 60 frames)
+        let dt = ctx.input(|i| i.stable_dt) as f64;
+        self.frame_times.push(dt);
+        if self.frame_times.len() > 60 {
+            self.frame_times.remove(0);
+        }
+        if !self.frame_times.is_empty() {
+            let avg_dt: f64 = self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;
+            self.fps_display = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
+        }
+
+        // FPS overlay — subtle pill in top-right
+        egui::Area::new(egui::Id::new("fps_overlay"))
+            .fixed_pos(egui::pos2(ctx.screen_rect().right() - 72.0, 6.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(CatppuccinMocha::SURFACE0)
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::symmetric(8, 2))
+                    .show(ui, |ui| {
+                        let fps = self.fps_display;
+                        let color = if fps >= 55.0 {
+                            CatppuccinMocha::GREEN
+                        } else if fps >= 30.0 {
+                            CatppuccinMocha::YELLOW
+                        } else {
+                            CatppuccinMocha::RED
+                        };
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            ui.label(
+                                RichText::new(format!("{:.0}", fps))
+                                    .color(color)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(10.0),
+                            );
+                            ui.label(
+                                RichText::new("fps")
+                                    .color(CatppuccinMocha::OVERLAY0)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(10.0),
+                            );
+                        });
+                    });
+            });
+
+        // New session dialog
+        if self.show_new_session_dialog {
+            egui::Window::new("New Session")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut self.new_session_name);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Create").clicked() && !self.new_session_name.is_empty() {
+                            let session = self
+                                .session_manager
+                                .create_session(&self.new_session_name);
+                            self.current_session = Some(LoadedSession::new(session));
+                            self.selected_file_index = 0;
+                            self.new_session_name.clear();
+                            self.show_new_session_dialog = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.new_session_name.clear();
+                            self.show_new_session_dialog = false;
+                        }
+                    });
+                });
+        }
+
+        // Sidebar
+        egui::SidePanel::left("sidebar")
+            .default_width(self.sidebar_width)
+            .min_width(180.0)
+            .max_width(400.0)
+            .resizable(true)
+            .frame(egui::Frame::new().fill(CatppuccinMocha::MANTLE).inner_margin(12.0))
+            .show(ctx, |ui| {
+                self.show_sidebar(ui);
+            });
+
+        // Main content
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(CatppuccinMocha::BASE)
+                    .inner_margin(16.0),
+            )
+            .show(ctx, |ui| {
+                self.show_main_content(ui);
+            });
+    }
+}
