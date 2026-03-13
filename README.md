@@ -27,6 +27,12 @@ Built with Rust and [egui](https://github.com/emilk/egui), themed with Catppucci
 - Batch directory import
 - Toggle individual source files on/off to dynamically rebuild schema
 
+### Session Based
+
+- Create multiple independent sessions, each with their own set of loaded files and configuration
+- Sessions persist across app restarts — reopen and pick up where you left off
+- Switch between sessions to compare different datasets side by side
+
 ### Rich Data Handling
 
 - Automatic temporal type detection (ISO 8601 dates, times, Unix timestamps)
