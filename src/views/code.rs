@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{self, RichText, Ui};
 
-use crate::codegen::CodeGenerator;
+use crate::codegen::{CodeGenerator, localize_type};
 use crate::theme::CatppuccinMocha;
 
 struct StructBlock {
@@ -1374,7 +1374,10 @@ fn generate_file_code_structs(
         let mut field_pairs: Vec<(String, String)> = Vec::new();
         for field in &s.fields {
             let code_name = lang.field_name(&field.json_name);
-            let base_type = field.resolved_type.clone().unwrap_or_else(|| lang.type_name(&field.inferred_type));
+            let base_type = match &field.resolved_type {
+                Some(rt) => localize_type(rt, lang),
+                None => lang.type_name(&field.inferred_type),
+            };
             let resolved_type = if !prefix.is_empty() && !all_schema_names.contains(&base_type) {
                 prefix_type(&base_type, &prefix, &all_schema_names, &root_name)
             } else {
@@ -1394,29 +1397,41 @@ fn generate_file_code_structs(
     blocks
 }
 
-/// Prefix struct references in type strings (handles Vec<T>, Option<T>, bare T)
+/// Prefix struct references in type strings (handles Vec<T>, Option<T>, [T], T?, bare T)
 fn prefix_type(
-    rust_type: &str,
+    type_str: &str,
     prefix: &str,
     shared_names: &std::collections::BTreeSet<String>,
     root_name: &str,
 ) -> String {
-    if rust_type.starts_with("Vec<") && rust_type.ends_with('>') {
-        let inner = &rust_type[4..rust_type.len() - 1];
+    // Rust: Vec<T>
+    if type_str.starts_with("Vec<") && type_str.ends_with('>') {
+        let inner = &type_str[4..type_str.len() - 1];
         let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
         format!("Vec<{}>", prefixed_inner)
-    } else if rust_type.starts_with("Option<") && rust_type.ends_with('>') {
-        let inner = &rust_type[7..rust_type.len() - 1];
+    // Rust: Option<T>
+    } else if type_str.starts_with("Option<") && type_str.ends_with('>') {
+        let inner = &type_str[7..type_str.len() - 1];
         let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
         format!("Option<{}>", prefixed_inner)
-    } else if is_struct_name(rust_type)
-        && !shared_names.contains(rust_type)
-        && rust_type != root_name
-        && !rust_type.starts_with(prefix)
+    // Swift: [T]
+    } else if type_str.starts_with('[') && type_str.ends_with(']') {
+        let inner = &type_str[1..type_str.len() - 1];
+        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
+        format!("[{}]", prefixed_inner)
+    // Swift: T?
+    } else if type_str.ends_with('?') {
+        let inner = &type_str[..type_str.len() - 1];
+        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
+        format!("{}?", prefixed_inner)
+    } else if is_struct_name(type_str)
+        && !shared_names.contains(type_str)
+        && type_str != root_name
+        && !type_str.starts_with(prefix)
     {
-        format!("{}{}", prefix, rust_type)
+        format!("{}{}", prefix, type_str)
     } else {
-        rust_type.to_string()
+        type_str.to_string()
     }
 }
 
@@ -1425,10 +1440,14 @@ fn is_struct_name(s: &str) -> bool {
     let first = s.chars().next().unwrap_or('a');
     first.is_ascii_uppercase()
         && !s.contains('<')
+        && !s.contains('[')
         && !matches!(
             s,
+            // Rust primitives
             "String" | "Vec" | "Option" | "bool" | "i64" | "u64" | "f64" | "i32" | "u32" | "f32"
                 | "NaiveDate" | "NaiveTime"
+                // Swift primitives
+                | "Bool" | "Int" | "Double" | "Date" | "Any"
         )
 }
 

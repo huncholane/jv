@@ -170,10 +170,10 @@ impl CodeGenerator {
             let mut field_pairs: Vec<(String, String)> = Vec::new();
             for field in &s.fields {
                 let code_name = lang.field_name(&field.json_name);
-                let type_str = field
-                    .resolved_type
-                    .clone()
-                    .unwrap_or_else(|| lang.type_name(&field.inferred_type));
+                let type_str = match &field.resolved_type {
+                    Some(rt) => localize_type(rt, lang),
+                    None => lang.type_name(&field.inferred_type),
+                };
                 output.push_str(&lang.field_line(&code_name, &type_str));
                 field_pairs.push((code_name, field.json_name.clone()));
             }
@@ -182,6 +182,26 @@ impl CodeGenerator {
         }
 
         output
+    }
+}
+
+/// Convert a resolved type (always stored in Rust syntax) to the target language.
+/// Unwraps `Vec<T>` and `Option<T>` wrappers, passes the inner struct name through,
+/// and re-wraps using the language's array/option syntax.
+pub fn localize_type(rust_type: &str, lang: &dyn crate::lang::LanguageGenerator) -> String {
+    if rust_type.starts_with("Vec<") && rust_type.ends_with('>') {
+        let inner = &rust_type[4..rust_type.len() - 1];
+        let localized_inner = localize_type(inner, lang);
+        lang.type_name(&InferredType::Array(Box::new(InferredType::String)))
+            .replace("String", &localized_inner)
+    } else if rust_type.starts_with("Option<") && rust_type.ends_with('>') {
+        let inner = &rust_type[7..rust_type.len() - 1];
+        let localized_inner = localize_type(inner, lang);
+        lang.type_name(&InferredType::Option(Box::new(InferredType::String)))
+            .replace("String", &localized_inner)
+    } else {
+        // Bare struct name — pass through as-is
+        rust_type.to_string()
     }
 }
 
