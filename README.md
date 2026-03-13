@@ -2,7 +2,7 @@
 
 A native desktop JSON viewer with intelligent schema inference, cross-file comparison, and code generation.
 
-Built with Rust and [egui](https://github.com/emilk/egui), themed with Catppuccin Mocha.
+Built with Rust and [egui](https://github.com/emilk/egui) for native performance — no Electron, no web runtime. Themed with Catppuccin Mocha.
 
 ## Features
 
@@ -26,6 +26,13 @@ Built with Rust and [egui](https://github.com/emilk/egui), themed with Catppucci
 - HAR (HTTP Archive) files with automatic response body extraction
 - Batch directory import
 - Toggle individual source files on/off to dynamically rebuild schema
+
+### Performance Focused
+
+- egui's immediate mode rendering keeps the UI snappy even with large JSON files
+- Virtual scrolling for long lists — only visible rows are rendered
+- Content-based caching with hash keys to avoid redundant recomputation
+- No garbage collector, no runtime overhead — just Rust
 
 ### Session Based
 
