@@ -1,9 +1,9 @@
 use egui::{self, RichText};
 
-use crate::schema::SchemaOverview;
-use crate::session::{LoadedSession, SessionManager};
-use crate::theme::CatppuccinMocha;
-use crate::views::{browser::BrowserView, code::CodeView, schema_diagram::SchemaDiagramView, shared_browser::SharedBrowserView, table::TableView};
+use jv::schema::SchemaOverview;
+use jv::session::{LoadedSession, SessionManager};
+use jv::theme::CatppuccinMocha;
+use jv::views::{browser::BrowserView, code::CodeView, schema_diagram::SchemaDiagramView, shared_browser::SharedBrowserView, table::TableView};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppMode {
@@ -154,7 +154,7 @@ impl JvApp {
             let is_har = path.extension().is_some_and(|e| e == "har");
             if is_har {
                 if let Ok(har_value) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let files = crate::har::extract_har_files(&har_value);
+                    let files = jv::har::extract_har_files(&har_value);
                     if let Some(loaded) = &mut self.current_session {
                         for (filename, value) in &files {
                             let json_str =
@@ -397,41 +397,36 @@ impl JvApp {
                                 CatppuccinMocha::SUBTEXT0
                             };
 
+                            let mut trash_rect = egui::Rect::NOTHING;
                             let r = egui::Frame::new()
                                 .fill(bg)
                                 .corner_radius(6.0)
                                 .inner_margin(egui::Margin::symmetric(8, 3))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        // Trash icon on left (only on hover)
-                                        if is_hovered {
-                                            let trash_id = ui.id().with(("trash", idx));
-                                            let trash_hovered = ui.ctx().data(|d| d.get_temp::<bool>(trash_id)).unwrap_or(false);
-                                            let trash_color = if trash_hovered {
-                                                CatppuccinMocha::RED
-                                            } else {
-                                                CatppuccinMocha::SURFACE2
-                                            };
-                                            let rm = ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(regular::TRASH)
-                                                        .color(trash_color)
-                                                        .size(12.0),
-                                                )
-                                                .sense(egui::Sense::click()),
-                                            );
-                                            ui.ctx().data_mut(|d| d.insert_temp(trash_id, rm.hovered()));
-                                            if rm.on_hover_text("Remove file").clicked() {
-                                                to_remove = Some(*idx);
-                                            }
-                                        }
+                                        // Trash icon
+                                        let trash_id = ui.id().with(("trash", idx));
+                                        let trash_hovered = ui.ctx().data(|d| d.get_temp::<bool>(trash_id)).unwrap_or(false);
+                                        let trash_color = if trash_hovered {
+                                            CatppuccinMocha::RED
+                                        } else {
+                                            CatppuccinMocha::SURFACE2
+                                        };
+                                        let rm = ui.label(
+                                            RichText::new(regular::TRASH)
+                                                .color(trash_color)
+                                                .size(12.0),
+                                        );
+                                        ui.ctx().data_mut(|d| d.insert_temp(trash_id, rm.hovered()));
+                                        trash_rect = rm.rect;
 
-                                        // Eye toggle icon
+                                        // Eye icon
                                         ui.label(
                                             RichText::new(eye_icon)
                                                 .color(eye_color)
                                                 .size(13.0),
                                         );
+                                        ui.add_space(2.0);
                                         // Filename
                                         ui.label(
                                             RichText::new(filename)
@@ -445,9 +440,14 @@ impl JvApp {
 
                             ui.ctx().data_mut(|d| d.insert_temp(row_id, r.hovered()));
 
-                            // Click anywhere on row toggles the file
                             if r.clicked() {
-                                toggled = Some(*idx);
+                                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                    if trash_rect.contains(pos) {
+                                        to_remove = Some(*idx);
+                                    } else {
+                                        toggled = Some(*idx);
+                                    }
+                                }
                             }
                         }
                     });

@@ -1,0 +1,71 @@
+{
+  "report_id": "RPT-2025-Q4",
+  "generated_at": "2026-01-02T00:00:00Z",
+  "period": {
+    "start": "2025-10-01",
+    "end": "2025-12-31"
+  },
+  "summary": {
+    "total_revenue": 1548230.75,
+    "total_orders": 12847,
+    "unique_customers": 8932,
+    "avg_order_value": 120.51,
+    "return_rate": 0.032,
+    "currency": "USD"
+  },
+  "monthly_breakdown": [
+    {
+      "month": "2025-10",
+      "revenue": 487320.25,
+      "orders": 4102,
+      "new_customers": 1205,
+      "returning_customers": 2897,
+      "top_category": "electronics",
+      "conversion_rate": 0.034
+    },
+    {
+      "month": "2025-11",
+      "revenue": 412890.50,
+      "orders": 3845,
+      "new_customers": 980,
+      "returning_customers": 2865,
+      "top_category": "electronics",
+      "conversion_rate": 0.031
+    },
+    {
+      "month": "2025-12",
+      "revenue": 648020.00,
+      "orders": 4900,
+      "new_customers": 1847,
+      "returning_customers": 3053,
+      "top_category": "electronics",
+      "conversion_rate": 0.045
+    }
+  ],
+  "top_products": [
+    {
+      "product_id": "PROD-A1",
+      "name": "Mechanical Keyboard",
+      "units_sold": 1420,
+      "revenue": 127658.00
+    },
+    {
+      "product_id": "PROD-C1",
+      "name": "Standing Desk",
+      "units_sold": 312,
+      "revenue": 77844.00
+    }
+  ],
+  "traffic_sources": {
+    "organic": 45200,
+    "paid": 28100,
+    "referral": 12400,
+    "direct": 31800,
+    "social": 8900
+  },
+  "flags": {
+    "data_complete": true,
+    "audited": false,
+    "anomalies_detected": 2
+  }
+}

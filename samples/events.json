@@ -1,0 +1,126 @@
+[
+  {
+    "event_id": "EVT-001",
+    "type": "conference",
+    "title": "RustConf 2025",
+    "start_time": "2025-09-15T09:00:00-07:00",
+    "end_time": "2025-09-17T17:00:00-07:00",
+    "all_day": false,
+    "recurring": null,
+    "location": {
+      "venue": "Portland Convention Center",
+      "address": {
+        "street": "777 NE MLK Jr Blvd",
+        "city": "Portland",
+        "state": "OR",
+        "zip": "97232",
+        "country": "US",
+        "coordinates": {
+          "lat": 45.5289,
+          "lng": -122.6625
+        }
+      },
+      "capacity": 2000,
+      "virtual_url": null
+    },
+    "organizer": {
+      "name": "Rust Foundation",
+      "email": "events@rust-lang.org"
+    },
+    "attendees": [
+      {
+        "user_id": 1,
+        "name": "Alice Johnson",
+        "rsvp_status": "confirmed",
+        "rsvp_date": "2025-07-01T10:00:00Z",
+        "ticket_type": "vip"
+      },
+      {
+        "user_id": 3,
+        "name": "Charlie Brown",
+        "rsvp_status": "confirmed",
+        "rsvp_date": "2025-08-15T14:30:00Z",
+        "ticket_type": "general"
+      }
+    ],
+    "tags": ["rust", "programming", "conference"],
+    "metadata": {
+      "created_by": 1,
+      "version": 3,
+      "last_modified": "2025-09-01T12:00:00Z",
+      "is_public": true
+    }
+  },
+  {
+    "event_id": "EVT-002",
+    "type": "meetup",
+    "title": "Local Rust Meetup",
+    "start_time": "2026-02-20T18:30:00-05:00",
+    "end_time": "2026-02-20T21:00:00-05:00",
+    "all_day": false,
+    "recurring": "monthly",
+    "location": {
+      "venue": "TechHub Coworking",
+      "address": {
+        "street": "100 Innovation Dr",
+        "city": "Boston",
+        "state": "MA",
+        "zip": "02101",
+        "country": "US",
+        "coordinates": {
+          "lat": 42.3601,
+          "lng": -71.0589
+        }
+      },
+      "capacity": 50,
+      "virtual_url": "https://picsum.photos/id/180/400/300"
+    },
+    "organizer": {
+      "name": "Boston Rust Group",
+      "email": "boston-rust@example.com"
+    },
+    "attendees": [],
+    "tags": ["rust", "meetup"],
+    "metadata": {
+      "created_by": 3,
+      "version": 1,
+      "last_modified": "2026-01-15T09:00:00Z",
+      "is_public": true
+    }
+  },
+  {
+    "event_id": "EVT-003",
+    "type": "workshop",
+    "title": "Intro to egui",
+    "start_time": "2026-03-10",
+    "end_time": "2026-03-10",
+    "all_day": true,
+    "recurring": null,
+    "location": {
+      "venue": null,
+      "address": null,
+      "capacity": null,
+      "virtual_url": "https://picsum.photos/id/119/400/300"
+    },
+    "organizer": {
+      "name": "GUI Guild",
+      "email": "hello@guiguild.example.com"
+    },
+    "attendees": [
+      {
+        "user_id": 1,
+        "name": "Alice Johnson",
+        "rsvp_status": "tentative",
+        "rsvp_date": "2026-02-28T20:00:00Z",
+        "ticket_type": "free"
+      }
+    ],
+    "tags": ["egui", "workshop", "beginner"],
+    "metadata": {
+      "created_by": 1,
+      "version": 1,
+      "last_modified": "2026-02-20T10:00:00Z",
+      "is_public": false
+    }
+  }
+]

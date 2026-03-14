@@ -1,0 +1,79 @@
+{
+  "empty_object": {},
+  "empty_array": [],
+  "null_value": null,
+  "nested_nulls": {
+    "a": null,
+    "b": null,
+    "c": {
+      "d": null
+    }
+  },
+  "deep_nesting": {
+    "level1": {
+      "level2": {
+        "level3": {
+          "level4": {
+            "level5": {
+              "value": "deeply nested",
+              "count": 42
+            }
+          }
+        }
+      }
+    }
+  },
+  "mixed_array": [1, "two", true, null, 3.14],
+  "unicode_keys": {
+    "日本語": "Japanese",
+    "café": "French",
+    "naïve": "English with diacritics",
+    "emoji_🚀": "rocket"
+  },
+  "numeric_strings": {
+    "looks_like_int": "42",
+    "looks_like_float": "3.14",
+    "looks_like_bool": "true",
+    "actual_int": 42,
+    "actual_float": 3.14,
+    "actual_bool": true
+  },
+  "timestamp_formats": {
+    "iso8601_utc": "2025-06-15T10:30:00Z",
+    "iso8601_offset": "2025-06-15T10:30:00+05:30",
+    "date_only": "2025-06-15",
+    "time_only": "10:30:00",
+    "unix_seconds": 1750000000,
+    "unix_millis": 1750000000000,
+    "not_a_date": "hello-world",
+    "ambiguous": "2025"
+  },
+  "large_numbers": {
+    "big_int": 9007199254740992,
+    "negative_big": -9007199254740992,
+    "tiny_float": 0.000000001,
+    "scientific": 1.23e10
+  },
+  "special_strings": {
+    "empty": "",
+    "whitespace_only": "   ",
+    "newlines": "line1\nline2\nline3",
+    "tabs": "col1\tcol2\tcol3",
+    "html": "<div class=\"test\">Hello &amp; world</div>",
+    "json_in_string": "{\"nested\": true}",
+    "very_long": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."
+  },
+  "boolean_variants": {
+    "yes": true,
+    "no": false
+  },
+  "array_of_arrays": [[1, 2], [3, 4], [5, 6]],
+  "array_of_mixed_objects": [
+    {"type": "a", "value": 1},
+    {"type": "b", "value": 2, "extra": true},
+    {"type": "a", "value": 3}
+  ],
+  "singleton_object_in_array": [
+    {"only": "one"}
+  ]
+}

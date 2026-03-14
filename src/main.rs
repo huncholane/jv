@@ -1,14 +1,4 @@
 mod app;
-mod codegen;
-mod har;
-mod jq_engine;
-mod lang;
-mod schema;
-mod session;
-mod temporal;
-mod theme;
-mod types;
-mod views;
 
 use app::JvApp;
 
@@ -19,7 +9,11 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([800.0, 500.0])
-            .with_title("jv - JSON Viewer"),
+            .with_title(if cfg!(debug_assertions) {
+                "jv - JSON Viewer [DEBUG]"
+            } else {
+                "jv - JSON Viewer"
+            }),
         ..Default::default()
     };
 

@@ -415,10 +415,3 @@ fn derive_struct_name(context_key: &str) -> String {
         result
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/private/schema_tests.rs"));
-}

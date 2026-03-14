@@ -1,0 +1,70 @@
+[
+  {
+    "id": 3,
+    "name": "Charlie Brown",
+    "email": "charlie@example.com",
+    "active": true,
+    "created_at": "2024-06-01T12:00:00Z",
+    "last_login": "2026-01-10T08:15:00Z",
+    "age": 45,
+    "score": 88.0,
+    "role": "editor",
+    "profile": {
+      "bio": "Data analyst and visualization enthusiast",
+      "avatar_url": "https://i.pravatar.cc/150?u=charlie",
+      "timezone": "Asia/Tokyo",
+      "preferences": {
+        "theme": "dark",
+        "notifications": true,
+        "language": "ja",
+        "dashboard_layout": "compact"
+      }
+    },
+    "tags": ["analyst", "visualization"],
+    "address": {
+      "street": "789 Sakura Blvd",
+      "city": "Tokyo",
+      "state": "Tokyo",
+      "zip": "100-0001",
+      "country": "JP",
+      "coordinates": {
+        "lat": 35.6762,
+        "lng": 139.6503
+      }
+    },
+    "orders": [
+      {
+        "order_id": "ORD-005",
+        "total": 249.50,
+        "currency": "JPY",
+        "status": "shipped",
+        "placed_at": "2025-11-28T03:30:00Z",
+        "items": [
+          {
+            "product_id": "PROD-C1",
+            "name": "Standing Desk",
+            "quantity": 1,
+            "price": 249.50,
+            "category": "furniture"
+          }
+        ]
+      },
+      {
+        "order_id": "ORD-006",
+        "total": 45.00,
+        "currency": "JPY",
+        "status": "pending",
+        "placed_at": "2026-01-05T11:00:00Z",
+        "items": [
+          {
+            "product_id": "PROD-C2",
+            "name": "Monitor Arm",
+            "quantity": 1,
+            "price": 45.00,
+            "category": "furniture"
+          }
+        ]
+      }
+    ]
+  }
+]

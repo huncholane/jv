@@ -1,0 +1,97 @@
+[
+  {
+    "product_id": "PROD-A1",
+    "name": "Mechanical Keyboard",
+    "description": "Cherry MX Brown switches, full RGB",
+    "price": 89.99,
+    "in_stock": true,
+    "stock_count": 142,
+    "category": "electronics",
+    "weight_kg": 0.95,
+    "created_date": "2023-03-15",
+    "updated_at": "2025-10-01T09:00:00Z",
+    "dimensions": {
+      "length": 44.0,
+      "width": 13.5,
+      "height": 3.8,
+      "unit": "cm"
+    },
+    "manufacturer": {
+      "name": "KeyCorp",
+      "country": "TW",
+      "website": "https://picsum.photos/id/60/200",
+      "contact": {
+        "email": "support@keycorp.example.com",
+        "phone": "+886-2-1234-5678"
+      }
+    },
+    "ratings": {
+      "average": 4.7,
+      "count": 328,
+      "distribution": {
+        "five_star": 245,
+        "four_star": 52,
+        "three_star": 18,
+        "two_star": 8,
+        "one_star": 5
+      }
+    },
+    "variants": [
+      {
+        "sku": "KB-MX-BRN-US",
+        "color": "black",
+        "layout": "US",
+        "price_modifier": 0.0,
+        "available": true
+      },
+      {
+        "sku": "KB-MX-BRN-UK",
+        "color": "white",
+        "layout": "UK",
+        "price_modifier": 5.00,
+        "available": false
+      }
+    ],
+    "related_product_ids": ["PROD-A2", "PROD-C1"]
+  },
+  {
+    "product_id": "PROD-A2",
+    "name": "USB-C Cable",
+    "description": "Braided 2m cable, 100W charging",
+    "price": 20.00,
+    "in_stock": true,
+    "stock_count": 1500,
+    "category": "accessories",
+    "weight_kg": 0.05,
+    "created_date": "2024-01-10",
+    "updated_at": "2025-09-15T14:30:00Z",
+    "dimensions": {
+      "length": 200.0,
+      "width": 0.5,
+      "height": 0.5,
+      "unit": "cm"
+    },
+    "manufacturer": {
+      "name": "CableTech",
+      "country": "CN",
+      "website": null,
+      "contact": {
+        "email": "info@cabletech.example.com",
+        "phone": null
+      }
+    },
+    "ratings": {
+      "average": 4.2,
+      "count": 89,
+      "distribution": {
+        "five_star": 45,
+        "four_star": 25,
+        "three_star": 10,
+        "two_star": 5,
+        "one_star": 4
+      }
+    },
+    "variants": [],
+    "related_product_ids": ["PROD-A1"]
+  }
+]
