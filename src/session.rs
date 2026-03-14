@@ -33,6 +33,12 @@ fn default_jaccard() -> f32 {
     0.8
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum FileSource {
+    Json,
+    Har,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionFile {
     pub id: String,
@@ -40,6 +46,12 @@ pub struct SessionFile {
     pub filename: String,
     pub imported_at: String,
     pub content: String,
+    #[serde(default = "default_source")]
+    pub source: FileSource,
+}
+
+fn default_source() -> FileSource {
+    FileSource::Json
 }
 
 pub struct LoadedSession {
@@ -80,7 +92,7 @@ impl LoadedSession {
         }
     }
 
-    pub fn add_file(&mut self, path: &str, content: String) -> Result<(), String> {
+    pub fn add_file(&mut self, path: &str, content: String, source: FileSource) -> Result<(), String> {
         let value: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -96,6 +108,7 @@ impl LoadedSession {
             filename: filename.clone(),
             imported_at: now.clone(),
             content,
+            source,
         };
 
         self.session.files.push(file);

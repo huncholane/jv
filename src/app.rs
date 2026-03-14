@@ -243,7 +243,7 @@ impl JvApp {
                         for (filename, value) in &files {
                             let json_str =
                                 serde_json::to_string_pretty(value).unwrap_or_default();
-                            if loaded.add_file(filename, json_str).is_ok() {}
+                            if loaded.add_file(filename, json_str, jv::session::FileSource::Har).is_ok() {}
                         }
                         self.session_manager.update_session(&loaded.session);
                         self.rebuild_schema();
@@ -252,7 +252,7 @@ impl JvApp {
             } else {
                 let path_str = path.to_string_lossy().to_string();
                 if let Some(loaded) = &mut self.current_session {
-                    if loaded.add_file(&path_str, content).is_ok() {
+                    if loaded.add_file(&path_str, content, jv::session::FileSource::Json).is_ok() {
                         self.session_manager.update_session(&loaded.session);
                         self.rebuild_schema();
                     }
@@ -437,19 +437,19 @@ impl JvApp {
             let mut toggled: Option<usize> = None;
 
             if let Some(loaded) = &self.current_session {
-                let mut files: Vec<(usize, String)> = loaded
+                let mut files: Vec<(usize, String, jv::session::FileSource)> = loaded
                     .session
                     .files
                     .iter()
                     .enumerate()
-                    .map(|(i, f)| (i, f.filename.clone()))
+                    .map(|(i, f)| (i, f.filename.clone(), f.source))
                     .collect();
                 files.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
 
                 egui::ScrollArea::vertical()
                     .id_salt("file_list")
                     .show(ui, |ui| {
-                        for (idx, filename) in &files {
+                        for (idx, filename, source) in &files {
                             let is_disabled = self.disabled_files.contains(idx);
 
                             let row_id = ui.id().with(("file_row", idx));
@@ -511,12 +511,39 @@ impl JvApp {
                                                 .size(13.0),
                                         );
                                         ui.add_space(2.0);
-                                        // Filename
+
+                                        // Strip extension for display
+                                        let display_name = filename
+                                            .strip_suffix(".json")
+                                            .or_else(|| filename.strip_suffix(".har"))
+                                            .unwrap_or(filename);
+
+                                        // Filename without extension
                                         ui.label(
-                                            RichText::new(filename)
+                                            RichText::new(display_name)
                                                 .color(text_color)
                                                 .size(12.0),
                                         );
+
+                                        // Source tag pill pushed to the right
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            let (tag_label, tag_bg) = match source {
+                                                jv::session::FileSource::Har => ("har", CatppuccinMocha::MAUVE),
+                                                jv::session::FileSource::Json => ("json", CatppuccinMocha::BLUE),
+                                            };
+                                            egui::Frame::new()
+                                                .fill(tag_bg)
+                                                .corner_radius(4.0)
+                                                .inner_margin(egui::Margin::symmetric(4, 1))
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        RichText::new(tag_label)
+                                                            .color(CatppuccinMocha::CRUST)
+                                                            .size(9.0)
+                                                            .strong(),
+                                                    );
+                                                });
+                                        });
                                     });
                                 })
                                 .response
@@ -909,7 +936,12 @@ impl JvApp {
                 let content = String::from_utf8_lossy(bytes).to_string();
                 let name = file.name.clone();
                 if let Some(loaded) = &mut self.current_session {
-                    if loaded.add_file(&name, content).is_ok() {
+                    let source = if name.ends_with(".har") {
+                        jv::session::FileSource::Har
+                    } else {
+                        jv::session::FileSource::Json
+                    };
+                    if loaded.add_file(&name, content, source).is_ok() {
                         self.session_manager.update_session(&loaded.session);
                         self.rebuild_schema();
                     }
@@ -957,11 +989,11 @@ impl eframe::App for JvApp {
                                     let extracted = jv::har::extract_har_files(&har_value);
                                     for (filename, value) in &extracted {
                                         let json_str = serde_json::to_string_pretty(value).unwrap_or_default();
-                                        let _ = loaded.add_file(filename, json_str);
+                                        let _ = loaded.add_file(filename, json_str, jv::session::FileSource::Har);
                                     }
                                 }
                             } else {
-                                let _ = loaded.add_file(&sample.filename, sample.content.clone());
+                                let _ = loaded.add_file(&sample.filename, sample.content.clone(), jv::session::FileSource::Json);
                             }
                         }
                         self.session_manager.update_session(&loaded.session);
