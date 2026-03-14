@@ -58,11 +58,84 @@ pub struct JvApp {
 
     // Async file dialog results
     file_dialog_rx: Option<std::sync::mpsc::Receiver<FileDialogResult>>,
+
+    // Async sample fetch from GitHub
+    samples_rx: Option<std::sync::mpsc::Receiver<Vec<SampleFile>>>,
 }
 
 enum FileDialogResult {
     Files(Vec<std::path::PathBuf>),
     Directory(std::path::PathBuf),
+}
+
+/// Fetched sample file from GitHub
+struct SampleFile {
+    filename: String,
+    content: String,
+}
+
+const SAMPLES_API_URL: &str =
+    "https://api.github.com/repos/huncholane/jv/contents/samples/public";
+
+/// Fetch public sample files from GitHub in a background thread.
+fn fetch_github_samples(
+    tx: std::sync::mpsc::Sender<Vec<SampleFile>>,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Vec<SampleFile>, Box<dyn std::error::Error + Send + Sync>> {
+            let listing = ureq::get(SAMPLES_API_URL)
+                .header("User-Agent", "jv-json-viewer")
+                .call()?
+                .body_mut()
+                .read_to_string()?;
+            let body: serde_json::Value = serde_json::from_str(&listing)?;
+
+            let entries = body.as_array().ok_or("expected array from GitHub API")?;
+            let mut files = Vec::new();
+
+            for entry in entries {
+                let name = entry["name"].as_str().unwrap_or("");
+                let download_url = entry["download_url"].as_str().unwrap_or("");
+
+                // Only fetch .json and .har files
+                if !(name.ends_with(".json") || name.ends_with(".har")) || download_url.is_empty() {
+                    continue;
+                }
+
+                match ureq::get(download_url)
+                    .header("User-Agent", "jv-json-viewer")
+                    .call()
+                {
+                    Ok(mut resp) => {
+                        if let Ok(content) = resp.body_mut().read_to_string() {
+                            files.push(SampleFile {
+                                filename: name.to_string(),
+                                content,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch sample {}: {}", name, e);
+                    }
+                }
+            }
+
+            Ok(files)
+        })();
+
+        match result {
+            Ok(files) => {
+                tracing::info!("Fetched {} sample files from GitHub", files.len());
+                let _ = tx.send(files);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch samples from GitHub: {}", e);
+                let _ = tx.send(Vec::new());
+            }
+        }
+        ctx.request_repaint();
+    });
 }
 
 impl JvApp {
@@ -76,6 +149,7 @@ impl JvApp {
         let mut manager = SessionManager::new();
 
         // Auto-create a default session if none exist
+        let mut samples_rx = None;
         let current = if manager.sessions.is_empty() {
             let session = manager.create_session("Default Session");
             Some(LoadedSession::new(session))
@@ -83,6 +157,15 @@ impl JvApp {
             let session = manager.sessions[0].clone();
             Some(LoadedSession::new(session))
         };
+
+        // If the Default Session has no files, fetch samples from GitHub
+        if let Some(loaded) = &current {
+            if loaded.session.name == "Default Session" && loaded.session.files.is_empty() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                fetch_github_samples(tx, cc.egui_ctx.clone());
+                samples_rx = Some(rx);
+            }
+        }
 
         let mut app = Self {
             session_manager: manager,
@@ -107,6 +190,7 @@ impl JvApp {
             frame_times: Vec::with_capacity(60),
             fps_display: 0.0,
             file_dialog_rx: None,
+            samples_rx,
         };
         if let Some(loaded) = &app.current_session {
             app.applied_threshold = loaded.session.jaccard_threshold;
@@ -856,6 +940,37 @@ impl eframe::App for JvApp {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // Dialog was cancelled
                     self.file_dialog_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        // Poll for GitHub sample files
+        if let Some(rx) = &self.samples_rx {
+            match rx.try_recv() {
+                Ok(files) => {
+                    if let Some(loaded) = &mut self.current_session {
+                        for sample in &files {
+                            let is_har = sample.filename.ends_with(".har");
+                            if is_har {
+                                if let Ok(har_value) = serde_json::from_str::<serde_json::Value>(&sample.content) {
+                                    let extracted = jv::har::extract_har_files(&har_value);
+                                    for (filename, value) in &extracted {
+                                        let json_str = serde_json::to_string_pretty(value).unwrap_or_default();
+                                        let _ = loaded.add_file(filename, json_str);
+                                    }
+                                }
+                            } else {
+                                let _ = loaded.add_file(&sample.filename, sample.content.clone());
+                            }
+                        }
+                        self.session_manager.update_session(&loaded.session);
+                    }
+                    self.rebuild_schema();
+                    self.samples_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.samples_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
