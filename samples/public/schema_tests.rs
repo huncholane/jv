@@ -1,6 +1,6 @@
-// Public sample tests — run against committed data in tests/samples/
+// Public sample tests — run against committed data in samples/public/
 
-const SAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/samples");
+const SAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/public");
 
 fn load_samples() -> Vec<(String, serde_json::Value)> {
     let dir = std::path::Path::new(SAMPLES_DIR);

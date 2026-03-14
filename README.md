@@ -70,7 +70,7 @@ Or after building:
 
 Tests in `tests/private/` are gitignored so contributors can write tests against their own JSON/HAR data without risking exposing personal or proprietary information to the repository. The test files are included into the main test suite via `include!()` macros — they compile and run locally but never get committed.
 
-To use private tests, add `.json` or `.har` files to `private_samples/` and write test functions in `tests/private/`. Both directories are gitignored.
+To use private tests, add `.json` or `.har` files to `samples/private/` and write test functions in `tests/private/`. Both directories are gitignored.
 
 ## Dependencies
 
