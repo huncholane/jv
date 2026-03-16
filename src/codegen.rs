@@ -144,28 +144,13 @@ impl CodeGenerator {
     }
 
     pub fn generate_code(&self, lang: &dyn crate::lang::LanguageGenerator) -> String {
-        let mut output = String::new();
-        output.push_str(&lang.file_header());
-
-        // Check if any field uses temporal types
-        let needs_temporal = self.structs.iter().any(|s| {
-            s.fields.iter().any(|f| {
-                matches!(
-                    f.inferred_type,
-                    InferredType::DateTime | InferredType::Date | InferredType::Time
-                )
-            })
-        });
-        output.push_str(&lang.imports_header(needs_temporal, false));
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-
+        // Generate struct bodies first so we know what types are used
+        let mut body = String::new();
         for (i, s) in self.structs.iter().rev().enumerate() {
             if i > 0 {
-                output.push('\n');
+                body.push('\n');
             }
-            output.push_str(&lang.struct_open(&s.name));
+            body.push_str(&lang.struct_open(&s.name));
 
             let mut field_pairs: Vec<(String, String)> = Vec::new();
             for field in &s.fields {
@@ -174,12 +159,21 @@ impl CodeGenerator {
                     Some(rt) => localize_type(rt, lang),
                     None => lang.type_name(&field.inferred_type),
                 };
-                output.push_str(&lang.field_line(&code_name, &type_str));
+                body.push_str(&lang.field_line(&code_name, &type_str));
                 field_pairs.push((code_name, field.json_name.clone()));
             }
 
-            output.push_str(&lang.struct_close(&field_pairs));
+            body.push_str(&lang.struct_close(&field_pairs));
         }
+
+        // Build output with imports based on what the body actually uses
+        let mut output = String::new();
+        output.push_str(&lang.file_header());
+        output.push_str(&lang.imports_header(&body, false));
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&body);
 
         output
     }
@@ -330,7 +324,9 @@ fn sanitize_keyword(s: &str) -> String {
         "type" | "struct" | "enum" | "fn" | "let" | "mut" | "ref" | "self" | "super" | "mod"
         | "use" | "pub" | "crate" | "impl" | "trait" | "for" | "loop" | "while" | "if"
         | "else" | "match" | "return" | "break" | "continue" | "move" | "async" | "await"
-        | "dyn" | "static" | "const" | "where" | "unsafe" | "extern" | "as" | "in" => {
+        | "dyn" | "static" | "const" | "where" | "unsafe" | "extern" | "as" | "in"
+        | "override" | "abstract" | "become" | "box" | "do" | "final" | "macro" | "priv"
+        | "try" | "typeof" | "unsized" | "virtual" | "yield" => {
             format!("r#{}", s)
         }
         _ => s.to_string(),

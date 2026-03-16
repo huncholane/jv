@@ -85,7 +85,7 @@ impl LanguageGenerator for SwiftGenerator {
         String::new()
     }
 
-    fn imports_header(&self, _needs_temporal: bool, _has_shared: bool) -> String {
+    fn imports_header(&self, _code_body: &str, _has_shared: bool) -> String {
         "import Foundation\n".to_string()
     }
 

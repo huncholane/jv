@@ -395,23 +395,22 @@ impl CodeView {
                 }
             }
 
+            // Build struct body first, then generate imports based on what's used
+            let mut body = String::new();
+            for block in &struct_blocks {
+                body.push_str(block);
+                body.push('\n');
+            }
+
             let mut merged_code = String::new();
             let header = lang.file_header();
             if !header.is_empty() {
                 merged_code.push_str(&header);
                 merged_code.push('\n');
             }
-            let needs_temporal = struct_blocks.iter().any(|b| {
-                b.contains("DateTime<") || b.contains("NaiveDate") || b.contains("NaiveTime")
-                    || b.contains("Date") // Swift uses Date
-            });
-            merged_code.push_str(&lang.imports_header(needs_temporal, !shared_struct_names.is_empty()));
+            merged_code.push_str(&lang.imports_header(&body, !shared_struct_names.is_empty()));
             merged_code.push('\n');
-
-            for block in &struct_blocks {
-                merged_code.push_str(block);
-                merged_code.push('\n');
-            }
+            merged_code.push_str(&body);
 
             let code = merged_code.trim_end().to_string() + "\n";
             let lines: Vec<String> = code.lines().map(|l| l.to_string()).collect();
@@ -436,7 +435,8 @@ impl CodeView {
                 enums_code.push_str(&header);
                 enums_code.push('\n');
             }
-            enums_code.push_str(&lang.imports_header(false, false));
+            // Enums file has no struct bodies, just enum declarations — no chrono imports needed
+            enums_code.push_str(&lang.imports_header("", false));
             enums_code.push('\n');
             for (_, (enum_name, variants)) in &self.converted_enums {
                 enums_code.push_str(&lang.enum_open(enum_name));
@@ -490,10 +490,10 @@ impl CodeView {
                 }
                 if new_code != file.code {
                     // Add enum import for Rust only (Swift doesn't need imports)
-                    if is_rust && !new_code.contains("use crate::enums::") {
+                    if is_rust && !new_code.contains("use super::enums::") {
                         new_code = new_code.replace(
                             "use serde::{Deserialize, Serialize};\n",
-                            "use serde::{Deserialize, Serialize};\nuse crate::enums::*;\n",
+                            "use serde::{Deserialize, Serialize};\nuse super::enums::*;\n",
                         );
                     }
                     file.code = new_code;
@@ -1665,15 +1665,90 @@ fn render_code_line(
         }
     }
 
-    let color = if trimmed.starts_with("use ") || trimmed.starts_with("import ") {
-        CatppuccinMocha::MAUVE
-    } else if trimmed.starts_with("pub struct ") || trimmed.starts_with("struct ") {
-        CatppuccinMocha::MAUVE
-    } else {
-        CatppuccinMocha::TEXT
-    };
-
     ui.spacing_mut().item_spacing.x = 0.0;
+
+    // Struct/class header lines: "pub struct Foo {" / "struct Foo: Codable {"
+    let struct_keyword = if is_swift { "struct " } else { "pub struct " };
+    if trimmed.starts_with(struct_keyword) {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if !indent.is_empty() {
+            ui.label(RichText::new(indent).family(egui::FontFamily::Monospace));
+        }
+        ui.label(
+            RichText::new(struct_keyword)
+                .color(CatppuccinMocha::MAUVE)
+                .family(egui::FontFamily::Monospace),
+        );
+        let rest = &trimmed[struct_keyword.len()..];
+        let name = rest.split(|c: char| c == ' ' || c == '{' || c == ':' || c == '<').next().unwrap_or("");
+        ui.label(
+            RichText::new(name)
+                .color(CatppuccinMocha::YELLOW)
+                .family(egui::FontFamily::Monospace),
+        );
+        let after = &rest[name.len()..];
+        if !after.is_empty() {
+            // Highlight protocol/trait names like ": Codable, Decodable {"
+            render_tokens(ui, after, is_swift);
+        }
+        return LineAction::None;
+    }
+
+    // use/import lines: keyword in mauve, path in text
+    let import_keyword = if is_swift { "import " } else { "use " };
+    if trimmed.starts_with(import_keyword) {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if !indent.is_empty() {
+            ui.label(RichText::new(indent).family(egui::FontFamily::Monospace));
+        }
+        ui.label(
+            RichText::new(import_keyword)
+                .color(CatppuccinMocha::MAUVE)
+                .family(egui::FontFamily::Monospace),
+        );
+        let rest = &trimmed[import_keyword.len()..];
+        ui.label(
+            RichText::new(rest)
+                .color(CatppuccinMocha::TEXT)
+                .family(egui::FontFamily::Monospace),
+        );
+        return LineAction::None;
+    }
+
+    // CodingKeys case lines: case name = "value"
+    if is_swift && trimmed.starts_with("case ") && trimmed.contains(" = \"") {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if !indent.is_empty() {
+            ui.label(RichText::new(indent).family(egui::FontFamily::Monospace));
+        }
+        ui.label(
+            RichText::new("case ")
+                .color(CatppuccinMocha::MAUVE)
+                .family(egui::FontFamily::Monospace),
+        );
+        let rest = &trimmed["case ".len()..];
+        if let Some(eq_pos) = rest.find(" = ") {
+            let case_name = &rest[..eq_pos];
+            let value = &rest[eq_pos..];
+            ui.label(
+                RichText::new(case_name)
+                    .color(CatppuccinMocha::TEXT)
+                    .family(egui::FontFamily::Monospace),
+            );
+            ui.label(
+                RichText::new(value)
+                    .color(CatppuccinMocha::GREEN)
+                    .family(egui::FontFamily::Monospace),
+            );
+        } else {
+            ui.label(
+                RichText::new(rest)
+                    .color(CatppuccinMocha::TEXT)
+                    .family(egui::FontFamily::Monospace),
+            );
+        }
+        return LineAction::None;
+    }
 
     // Field lines: "pub field: Type," (Rust) or "let field: Type" (Swift)
     let is_field_line = if is_swift {
@@ -1868,20 +1943,89 @@ fn render_code_line(
                 btn.on_hover_text("Revert to String");
             }
         } else {
-            ui.label(
-                RichText::new(line)
-                    .color(color)
-                    .family(egui::FontFamily::Monospace),
-            );
+            let indent = &line[..line.len() - line.trim_start().len()];
+            if !indent.is_empty() {
+                ui.label(RichText::new(indent).family(egui::FontFamily::Monospace));
+            }
+            render_tokens(ui, trimmed, is_swift);
         }
     } else {
+        // Generic fallback — highlight tokens
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if !indent.is_empty() {
+            ui.label(RichText::new(indent).family(egui::FontFamily::Monospace));
+        }
+        render_tokens(ui, trimmed, is_swift);
+    }
+    LineAction::None
+}
+
+/// Render a code fragment with basic token-level syntax highlighting.
+fn render_tokens(ui: &mut Ui, text: &str, is_swift: bool) {
+    let keywords: &[&str] = if is_swift {
+        &["struct", "enum", "case", "let", "var", "import", "public", "private", "func", "class", "protocol", "typealias"]
+    } else {
+        &["pub", "struct", "enum", "use", "fn", "let", "mut", "impl", "mod", "type", "crate", "self", "super"]
+    };
+
+    let mut chars = text.char_indices().peekable();
+    let mut tokens: Vec<(&str, egui::Color32)> = Vec::new();
+
+    while let Some(&(i, ch)) = chars.peek() {
+        if ch == '"' {
+            // String literal
+            chars.next();
+            let start = i;
+            while let Some(&(_, c)) = chars.peek() {
+                chars.next();
+                if c == '"' { break; }
+            }
+            let end = chars.peek().map_or(text.len(), |&(j, _)| j);
+            tokens.push((&text[start..end], CatppuccinMocha::GREEN));
+        } else if ch.is_alphabetic() || ch == '_' {
+            // Identifier/keyword
+            let start = i;
+            while chars.peek().is_some_and(|&(_, c)| c.is_alphanumeric() || c == '_') {
+                chars.next();
+            }
+            let end = chars.peek().map_or(text.len(), |&(j, _)| j);
+            let word = &text[start..end];
+            let color = if keywords.contains(&word) {
+                CatppuccinMocha::MAUVE
+            } else if word.chars().next().is_some_and(|c| c.is_uppercase()) {
+                // PascalCase = type name
+                CatppuccinMocha::YELLOW
+            } else if matches!(word, "true" | "false") {
+                CatppuccinMocha::PEACH
+            } else {
+                CatppuccinMocha::TEXT
+            };
+            tokens.push((word, color));
+        } else if ch.is_ascii_digit() {
+            let start = i;
+            while chars.peek().is_some_and(|&(_, c)| c.is_ascii_digit() || c == '.') {
+                chars.next();
+            }
+            let end = chars.peek().map_or(text.len(), |&(j, _)| j);
+            tokens.push((&text[start..end], CatppuccinMocha::PEACH));
+        } else {
+            // Punctuation / whitespace — batch consecutive
+            let start = i;
+            while chars.peek().is_some_and(|&(_, c)| !c.is_alphanumeric() && c != '_' && c != '"') {
+                chars.next();
+            }
+            let end = chars.peek().map_or(text.len(), |&(j, _)| j);
+            tokens.push((&text[start..end], CatppuccinMocha::TEXT));
+        }
+    }
+
+    for (text, color) in tokens {
         ui.label(
-            RichText::new(line)
+            RichText::new(text)
                 .color(color)
                 .family(egui::FontFamily::Monospace),
         );
     }
-    LineAction::None
 }
 
 /// Extract the innermost struct name from a type like "Vec<Option<Foo>>," -> "Foo"

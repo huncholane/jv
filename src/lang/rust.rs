@@ -8,7 +8,8 @@ const RUST_KEYWORDS: &[&str] = &[
     "type", "struct", "enum", "fn", "let", "mut", "ref", "self", "super", "mod", "use", "pub",
     "crate", "impl", "trait", "for", "loop", "while", "if", "else", "match", "return", "break",
     "continue", "move", "async", "await", "dyn", "static", "const", "where", "unsafe", "extern",
-    "as", "in",
+    "as", "in", "override", "abstract", "become", "box", "do", "final", "macro", "priv",
+    "try", "typeof", "unsized", "virtual", "yield",
 ];
 
 impl LanguageGenerator for RustGenerator {
@@ -20,11 +21,30 @@ impl LanguageGenerator for RustGenerator {
         "#![allow(non_snake_case)]\n".to_string()
     }
 
-    fn imports_header(&self, needs_temporal: bool, has_shared: bool) -> String {
+    fn imports_header(&self, code_body: &str, has_shared: bool) -> String {
         let mut out = "use serde::{Deserialize, Serialize};\n".to_string();
-        if needs_temporal {
-            out.push_str("use chrono::{DateTime, NaiveDate, NaiveTime, Utc};\n");
+
+        // Only import chrono types that are actually used
+        let mut chrono_types = Vec::new();
+        if code_body.contains("DateTime<FixedOffset>") {
+            chrono_types.push("DateTime");
+            chrono_types.push("FixedOffset");
         }
+        if code_body.contains("DateTime<Utc>") {
+            chrono_types.push("DateTime");
+            chrono_types.push("Utc");
+        }
+        if code_body.contains("NaiveDate") {
+            chrono_types.push("NaiveDate");
+        }
+        if code_body.contains("NaiveTime") {
+            chrono_types.push("NaiveTime");
+        }
+        chrono_types.dedup();
+        if !chrono_types.is_empty() {
+            out.push_str(&format!("use chrono::{{{}}};\n", chrono_types.join(", ")));
+        }
+
         if has_shared {
             out.push_str("use super::shared::*;\n");
         }
@@ -75,7 +95,9 @@ impl LanguageGenerator for RustGenerator {
     fn mod_file(&self, file_names: &[&str]) -> Option<String> {
         let mut out = String::new();
         for name in file_names {
-            out.push_str(&format!("mod {};\npub use {}::*;\n\n", name, name));
+            let stem = name.strip_suffix(".rs").unwrap_or(name);
+            let safe = self.sanitize_keyword(stem);
+            out.push_str(&format!("pub mod {};\npub use {}::*;\n\n", safe, safe));
         }
         Some(out)
     }

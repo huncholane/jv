@@ -28,7 +28,7 @@ impl CodeLanguage {
 pub trait LanguageGenerator {
     fn file_extension(&self) -> &str;
     fn file_header(&self) -> String;
-    fn imports_header(&self, needs_temporal: bool, has_shared: bool) -> String;
+    fn imports_header(&self, code_body: &str, has_shared: bool) -> String;
     fn struct_open(&self, name: &str) -> String;
     /// Close a struct. `fields` is (code_name, json_name) pairs for CodingKeys etc.
     fn struct_close(&self, fields: &[(String, String)]) -> String;

@@ -1,8 +1,23 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use egui::{self, RichText, Ui};
 
 use crate::jq_engine::JqEngine;
 use crate::temporal::{detect_temporal, detect_timezone, detect_unix_timestamp, TemporalValue};
 use crate::theme::CatppuccinMocha;
+
+/// Cached result of probing a URL for image content.
+#[derive(Debug, Clone)]
+enum ImageProbe {
+    Pending,
+    /// URL serves an image — we fetched the bytes for reliable rendering.
+    Loaded(Vec<u8>),
+    NotImage,
+}
+
+/// Shared cache for URL image probes — persists across frames.
+type ImageProbeCache = Arc<Mutex<HashMap<String, ImageProbe>>>;
 
 #[derive(Debug, Clone)]
 enum PathSegment {
@@ -926,7 +941,7 @@ impl BrowserView {
 
                 // Image preview — full width, no raw text
                 if let serde_json::Value::String(s) = val {
-                    if let Some(img) = detect_image_data(s) {
+                    if let Some(img) = detect_image_data(s, ui.ctx()) {
                         egui::ScrollArea::vertical()
                             .id_salt("browser_preview")
                             .auto_shrink(false)
@@ -1491,7 +1506,7 @@ enum ImageData {
     Url(String),
 }
 
-fn detect_image_data(s: &str) -> Option<ImageData> {
+fn detect_image_data(s: &str, ctx: &egui::Context) -> Option<ImageData> {
     use base64::Engine;
 
     // data:image/... base64
@@ -1511,19 +1526,87 @@ fn detect_image_data(s: &str) -> Option<ImageData> {
         }
     }
 
-    // URL pointing to an image
+    // URL — check if it's an image via extension or async probe
     let lower = s.to_lowercase();
-    if (lower.starts_with("http://") || lower.starts_with("https://"))
-        && (lower.ends_with(".png")
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let has_image_ext = lower.ends_with(".png")
             || lower.ends_with(".jpg")
             || lower.ends_with(".jpeg")
             || lower.ends_with(".gif")
             || lower.ends_with(".webp")
             || lower.ends_with(".svg")
             || lower.contains("/image")
-            || lower.contains("imgur.com"))
-    {
-        return Some(ImageData::Url(s.to_string()));
+            || lower.contains("imgur.com");
+
+        let cache: ImageProbeCache = ctx.data_mut(|d| {
+            d.get_temp_mut_or_default::<ImageProbeCache>(egui::Id::new("image_probe_cache"))
+                .clone()
+        });
+
+        let probe = {
+            let map = cache.lock().unwrap();
+            map.get(s).cloned()
+        };
+
+        match probe {
+            Some(ImageProbe::Loaded(bytes)) => {
+                return Some(ImageData::Base64 { data: bytes });
+            }
+            Some(ImageProbe::NotImage) => return None,
+            Some(ImageProbe::Pending) => {
+                // Still loading — for known extensions show URL placeholder
+                if has_image_ext {
+                    return Some(ImageData::Url(s.to_string()));
+                }
+                return None;
+            }
+            None => {
+                // Fire background GET to fetch image bytes (handles redirects)
+                {
+                    let mut map = cache.lock().unwrap();
+                    map.insert(s.to_string(), ImageProbe::Pending);
+                }
+                let url = s.to_string();
+                let cache_clone = cache.clone();
+                let ctx_clone = ctx.clone();
+                std::thread::spawn(move || {
+                    let result = (|| -> Option<Vec<u8>> {
+                        let mut resp = ureq::get(&url)
+                            .header("User-Agent", "jv-json-viewer")
+                            .call()
+                            .ok()?;
+
+                        let ct = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if !ct.starts_with("image/") {
+                            return None;
+                        }
+
+                        resp.body_mut().read_to_vec().ok()
+                    })();
+
+                    let mut map = cache_clone.lock().unwrap();
+                    match result {
+                        Some(bytes) if is_image_magic(&bytes) || !bytes.is_empty() => {
+                            map.insert(url, ImageProbe::Loaded(bytes));
+                        }
+                        _ => {
+                            map.insert(url, ImageProbe::NotImage);
+                        }
+                    }
+                    drop(map);
+                    ctx_clone.request_repaint();
+                });
+
+                // While fetching, show URL image for known extensions
+                if has_image_ext {
+                    return Some(ImageData::Url(s.to_string()));
+                }
+            }
+        }
     }
 
     None
