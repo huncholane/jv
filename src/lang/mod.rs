@@ -32,7 +32,7 @@ pub trait LanguageGenerator {
     fn struct_open(&self, name: &str) -> String;
     /// Close a struct. `fields` is (code_name, json_name) pairs for CodingKeys etc.
     fn struct_close(&self, fields: &[(String, String)]) -> String;
-    fn field_line(&self, code_name: &str, type_name: &str) -> String;
+    fn field_line(&self, code_name: &str, type_name: &str, json_name: &str) -> String;
     fn enum_open(&self, name: &str) -> String;
     fn enum_close(&self) -> String;
     fn enum_variant(&self, variant_name: &str, json_value: &str) -> String;

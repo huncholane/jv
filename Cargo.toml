@@ -29,3 +29,8 @@ ureq = "3"
 
 [features]
 private_tests = []
+
+[[test]]
+name = "private_schema_tests"
+path = "tests/private/schema_tests.rs"
+required-features = ["private_tests"]

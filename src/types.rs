@@ -122,7 +122,7 @@ impl InferredType {
 }
 
 /// Match an Object's field keys against known structs (80%+ key overlap)
-fn resolve_struct_name(
+pub fn resolve_struct_name(
     fields: &BTreeMap<String, InferredType>,
     structs: &[crate::schema::SharedStruct],
 ) -> Option<String> {

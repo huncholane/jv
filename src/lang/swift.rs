@@ -113,7 +113,7 @@ impl LanguageGenerator for SwiftGenerator {
         out
     }
 
-    fn field_line(&self, code_name: &str, type_name: &str) -> String {
+    fn field_line(&self, code_name: &str, type_name: &str, _json_name: &str) -> String {
         format!("    let {}: {}\n", code_name, type_name)
     }
 

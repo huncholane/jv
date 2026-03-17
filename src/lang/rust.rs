@@ -1,4 +1,3 @@
-use crate::codegen::to_snake_case;
 use crate::lang::LanguageGenerator;
 use crate::types::InferredType;
 
@@ -62,7 +61,7 @@ impl LanguageGenerator for RustGenerator {
         "}\n".to_string()
     }
 
-    fn field_line(&self, code_name: &str, type_name: &str) -> String {
+    fn field_line(&self, code_name: &str, type_name: &str, _json_name: &str) -> String {
         format!("    pub {}: {},\n", code_name, type_name)
     }
 
@@ -111,7 +110,7 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn field_name(&self, json_name: &str) -> String {
-        self.sanitize_keyword(&to_snake_case(json_name))
+        self.sanitize_keyword(json_name)
     }
 
     fn file_name(&self, base_name: &str) -> String {

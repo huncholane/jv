@@ -44,10 +44,11 @@ impl CodeGenerator {
                 .map(|(key, typ)| {
                     let snake = to_snake_case(key);
                     let needs_rename = snake != *key;
+                    let resolved_type = resolve_type_to_struct(typ, shared);
                     GeneratedField {
                         json_name: key.clone(),
                         inferred_type: typ.clone(),
-                        resolved_type: None,
+                        resolved_type,
                         needs_rename,
                     }
                 })
@@ -159,7 +160,7 @@ impl CodeGenerator {
                     Some(rt) => localize_type(rt, lang),
                     None => lang.type_name(&field.inferred_type),
                 };
-                body.push_str(&lang.field_line(&code_name, &type_str));
+                body.push_str(&lang.field_line(&code_name, &type_str, &field.json_name));
                 field_pairs.push((code_name, field.json_name.clone()));
             }
 
@@ -303,6 +304,26 @@ pub fn first_normal_word(filename: &str) -> Option<String> {
         return Some(part.to_ascii_lowercase());
     }
     None
+}
+
+/// Resolve an InferredType to a struct name if it contains an Object matching a known struct.
+/// Recursively handles Vec<Object>, Option<Object>, Option<Vec<Object>>, etc.
+pub fn resolve_type_to_struct(
+    typ: &InferredType,
+    shared: &[crate::schema::SharedStruct],
+) -> Option<String> {
+    match typ {
+        InferredType::Object(fields) => crate::types::resolve_struct_name(fields, shared),
+        InferredType::Array(inner) => {
+            let inner_resolved = resolve_type_to_struct(inner, shared);
+            inner_resolved.map(|name| format!("Vec<{}>", name))
+        }
+        InferredType::Option(inner) => {
+            let inner_resolved = resolve_type_to_struct(inner, shared);
+            inner_resolved.map(|name| format!("Option<{}>", name))
+        }
+        _ => None,
+    }
 }
 
 fn make_unique_name(name: &str, seen: &BTreeSet<String>) -> String {
