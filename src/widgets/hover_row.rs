@@ -9,7 +9,11 @@ pub fn prev_frame_hover(
 }
 
 /// Check hover for a pre-computed Id.
+/// Returns false when keyboard navigation is active (see `miller::keyboard_active`).
 pub fn check_hover(ctx: &egui::Context, id: egui::Id) -> (bool, egui::Id) {
+    if super::miller::keyboard_active(ctx) {
+        return (false, id);
+    }
     let hovered = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
     (hovered, id)
 }

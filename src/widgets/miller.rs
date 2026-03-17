@@ -12,8 +12,16 @@ pub enum MillerAction {
     None,
 }
 
+const KEYBOARD_ACTIVE_ID: &str = "miller_keyboard_active";
+
+/// Returns true if keyboard navigation happened this frame (suppresses hover highlights).
+pub fn keyboard_active(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new(KEYBOARD_ACTIVE_ID))).unwrap_or(false)
+}
+
 /// Read J/K/H/L/Arrow/Home/End/G keys and return the corresponding action.
 /// Pass `skip: true` to suppress (e.g., when a text input has focus).
+/// When a key is pressed, hover highlights are suppressed for this frame.
 pub fn read_miller_keys(ui: &Ui, skip: bool) -> MillerAction {
     if skip {
         return MillerAction::None;
@@ -34,7 +42,7 @@ pub fn read_miller_keys(ui: &Ui, skip: bool) -> MillerAction {
     let go_top = ui.input(|i| i.key_pressed(egui::Key::G) || i.key_pressed(egui::Key::Home));
     let go_bottom = ui.input(|i| i.key_pressed(egui::Key::End));
 
-    if down {
+    let action = if down {
         MillerAction::Down
     } else if up {
         MillerAction::Up
@@ -48,7 +56,13 @@ pub fn read_miller_keys(ui: &Ui, skip: bool) -> MillerAction {
         MillerAction::GoBottom
     } else {
         MillerAction::None
+    };
+
+    if action != MillerAction::None {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(KEYBOARD_ACTIVE_ID), true));
     }
+
+    action
 }
 
 /// Apply a navigation action to a selection index.
