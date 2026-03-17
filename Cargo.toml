@@ -34,3 +34,8 @@ private_tests = []
 name = "private_schema_tests"
 path = "tests/private/schema_tests.rs"
 required-features = ["private_tests"]
+
+[[test]]
+name = "private_codegen_compile"
+path = "tests/private/codegen_compile_test.rs"
+required-features = ["private_tests"]

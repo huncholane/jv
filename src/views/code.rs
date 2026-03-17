@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{self, RichText, Ui};
 
-use crate::codegen::{CodeGenerator, localize_type};
 use crate::theme::CatppuccinMocha;
 
 struct StructBlock {
@@ -346,86 +345,28 @@ impl CodeView {
         self.files.clear();
         let lang = self.selected_language.generator();
 
-        // shared file from schema (if available)
-        let shared_struct_names: std::collections::BTreeSet<String> = schema
-            .map(|s| s.structs.iter().map(|st| st.name.clone()).collect())
-            .unwrap_or_default();
+        let empty_schema = crate::schema::SchemaOverview {
+            structs: Vec::new(),
+            unique_structs: Vec::new(),
+        };
+        let schema = schema.unwrap_or(&empty_schema);
 
-        // unique struct names from schema — used to match disambiguated names
-        let unique_struct_names: std::collections::BTreeSet<String> = schema
-            .map(|s| s.unique_structs.iter().map(|st| st.name.clone()).collect())
-            .unwrap_or_default();
+        let project = crate::codegen::generate_project(parsed_files, schema, lang.as_ref());
+        let shared_file_name = lang.file_name("shared");
 
-        // All structs for resolving Object types to struct names in per-file codegen
-        let all_schema_structs: Vec<crate::schema::SharedStruct> = schema
-            .map(|s| s.all_structs())
-            .unwrap_or_default();
-
-        if let Some(s) = schema {
-            if !s.structs.is_empty() {
-                let code = CodeGenerator::from_schema(&s.structs).generate_code(lang.as_ref());
-                let lines: Vec<String> = code.lines().map(|l| l.to_string()).collect();
-                let struct_blocks = extract_struct_blocks(&lines, self.selected_language);
-                self.files.push(GeneratedFile {
-                    name: lang.file_name("shared"),
-                    code,
-                    lines,
-                    structs: struct_blocks,
-                    is_group: false,
-                });
+        for pf in &project {
+            if pf.name == "mod.rs" {
+                continue;
             }
-        }
-
-        // Group files by depluralized first word
-        let mut groups: std::collections::BTreeMap<String, Vec<(&str, &serde_json::Value)>> =
-            std::collections::BTreeMap::new();
-        for (filename, value) in parsed_files {
-            let word = first_normal_word(filename).unwrap_or_else(|| "other".to_string());
-            let key = crate::codegen::singularize(&word.to_ascii_lowercase());
-            groups.entry(key).or_default().push((filename.as_str(), value));
-        }
-
-        // Generate one file per group, merging struct definitions
-        for (group_key, files) in &groups {
-            let mut seen_structs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            let mut struct_blocks: Vec<String> = Vec::new();
-
-            for (filename, value) in files {
-                let raw = generate_file_code_structs(value, &shared_struct_names, &unique_struct_names, &all_schema_structs, filename, lang.as_ref());
-                for block in &raw {
-                    if !seen_structs.contains(&block.name) {
-                        seen_structs.insert(block.name.clone());
-                        struct_blocks.push(block.code.clone());
-                    }
-                }
-            }
-
-            // Build struct body first, then generate imports based on what's used
-            let mut body = String::new();
-            for block in &struct_blocks {
-                body.push_str(block);
-                body.push('\n');
-            }
-
-            let mut merged_code = String::new();
-            let header = lang.file_header();
-            if !header.is_empty() {
-                merged_code.push_str(&header);
-                merged_code.push('\n');
-            }
-            merged_code.push_str(&lang.imports_header(&body, !shared_struct_names.is_empty()));
-            merged_code.push('\n');
-            merged_code.push_str(&body);
-
-            let code = merged_code.trim_end().to_string() + "\n";
-            let lines: Vec<String> = code.lines().map(|l| l.to_string()).collect();
+            let lines: Vec<String> = pf.code.lines().map(|l| l.to_string()).collect();
             let struct_blocks = extract_struct_blocks(&lines, self.selected_language);
+            let is_group = pf.name != shared_file_name;
             self.files.push(GeneratedFile {
-                name: lang.file_name(group_key),
-                code,
+                name: pf.name.clone(),
+                code: pf.code.clone(),
                 lines,
                 structs: struct_blocks,
-                is_group: true,
+                is_group,
             });
         }
 
@@ -1287,276 +1228,6 @@ impl CodeView {
     }
 }
 
-/// Wrapper around codegen::first_normal_word that singularizes + PascalCases the result,
-/// matching the naming scheme used by schema disambiguation.
-fn first_normal_word(filename: &str) -> Option<String> {
-    crate::codegen::first_normal_word(filename).map(|w| {
-        let singular = crate::codegen::singularize(&w);
-        crate::codegen::to_pascal_case(&singular)
-    })
-}
-
-struct NamedCodeBlock {
-    name: String,
-    code: String,
-}
-
-/// Generate individual struct blocks for a file (used for grouping/merging)
-fn generate_file_code_structs(
-    value: &serde_json::Value,
-    shared_names: &std::collections::BTreeSet<String>,
-    unique_names: &std::collections::BTreeSet<String>,
-    schema_structs: &[crate::schema::SharedStruct],
-    filename: &str,
-    lang: &dyn crate::lang::LanguageGenerator,
-) -> Vec<NamedCodeBlock> {
-    let prefix = first_normal_word(filename).unwrap_or_default();
-    let is_root_array = value.is_array();
-
-    let (root_name, array_item_name) = if is_root_array {
-        let singular = crate::codegen::singularize(&prefix);
-        let item_name = if singular.is_empty() {
-            "Item".to_string()
-        } else {
-            let mut s = String::new();
-            s.push(singular.chars().next().unwrap().to_ascii_uppercase());
-            s.extend(singular.chars().skip(1));
-            s
-        };
-        (item_name.clone(), Some(item_name))
-    } else {
-        let name = if prefix.is_empty() {
-            "Root".to_string()
-        } else {
-            format!("{}Root", prefix)
-        };
-        (name, None)
-    };
-
-    let mut gen = CodeGenerator::from_value_named(value, &root_name);
-
-    // Resolve unresolved fields against schema structs.
-    // The per-file codegen infers types from one JSON instance, so nullable fields
-    // (e.g. jumpseatReservations: null) lose their real type. Look up the schema's
-    // merged type for those fields and resolve against known structs.
-    if !schema_structs.is_empty() {
-        for s in &mut gen.structs {
-            // Find the matching schema struct by field overlap
-            let schema_match = crate::types::resolve_struct_name(
-                &s.fields.iter().map(|f| (f.json_name.clone(), f.inferred_type.clone())).collect(),
-                schema_structs,
-            );
-            let schema_fields = schema_match.and_then(|name| {
-                schema_structs.iter().find(|ss| ss.name == name)
-            });
-
-            for field in &mut s.fields {
-                if field.resolved_type.is_none() {
-                    // First try resolving from the field's own inferred type
-                    field.resolved_type =
-                        crate::codegen::resolve_type_to_struct(&field.inferred_type, schema_structs);
-
-                    // If still unresolved, try the schema's merged type for this field
-                    if field.resolved_type.is_none() {
-                        if let Some(ss) = schema_fields {
-                            if let Some(schema_type) = ss.fields.get(&field.json_name) {
-                                field.resolved_type =
-                                    crate::codegen::resolve_type_to_struct(schema_type, schema_structs);
-                                // Also update inferred_type so rust_type() fallback is correct
-                                if field.resolved_type.is_some() {
-                                    field.inferred_type = schema_type.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Generate structs from schema for types referenced but not generated
-        // (happens when JSON value was null so collect_structs never saw the object)
-        let existing_names: std::collections::BTreeSet<String> =
-            gen.structs.iter().map(|s| s.name.clone()).collect();
-        let mut needed: Vec<String> = Vec::new();
-        for s in &gen.structs {
-            for field in &s.fields {
-                if let Some(rt) = &field.resolved_type {
-                    for name in extract_struct_names_from_resolved(rt) {
-                        if !existing_names.contains(&name) && !shared_names.contains(&name) {
-                            needed.push(name);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add missing structs from schema, and recurse for their dependencies
-        let mut added: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        while let Some(name) = needed.pop() {
-            if added.contains(&name) || existing_names.contains(&name) || shared_names.contains(&name) {
-                continue;
-            }
-            added.insert(name.clone());
-            if let Some(ss) = schema_structs.iter().find(|ss| ss.name == name) {
-                let fields: Vec<crate::codegen::GeneratedField> = ss.fields.iter().map(|(key, typ)| {
-                    let resolved = crate::codegen::resolve_type_to_struct(typ, schema_structs);
-                    // Queue any newly referenced structs
-                    if let Some(rt) = &resolved {
-                        for dep in extract_struct_names_from_resolved(rt) {
-                            needed.push(dep);
-                        }
-                    }
-                    crate::codegen::GeneratedField {
-                        json_name: key.clone(),
-                        inferred_type: typ.clone(),
-                        resolved_type: resolved,
-                        needs_rename: false,
-                    }
-                }).collect();
-                gen.structs.push(crate::codegen::GeneratedStruct {
-                    name: name.clone(),
-                    fields,
-                });
-            }
-        }
-    }
-
-    let mut blocks = Vec::new();
-
-    // Type alias for array roots
-    if let Some(ref item_name) = array_item_name {
-        let aliased = if shared_names.contains(item_name) {
-            item_name.clone()
-        } else if !prefix.is_empty() && !item_name.starts_with(&prefix) {
-            format!("{}{}", prefix, item_name)
-        } else {
-            item_name.clone()
-        };
-        blocks.push(NamedCodeBlock {
-            name: format!("{}Root", prefix),
-            code: format!("pub type {}Root = Vec<{}>;\n", prefix, aliased),
-        });
-    }
-
-    // Combine shared + unique names for type resolution
-    let all_schema_names: std::collections::BTreeSet<String> = shared_names
-        .iter()
-        .chain(unique_names.iter())
-        .cloned()
-        .collect();
-
-    for s in gen.structs.iter().rev() {
-        if shared_names.contains(&s.name) {
-            continue;
-        }
-
-        // Use schema-disambiguated name if available, otherwise prefix as before
-        let prefixed = format!("{}{}", prefix, s.name);
-        let struct_name = if unique_names.contains(&prefixed) {
-            prefixed
-        } else if unique_names.contains(&s.name) {
-            s.name.clone()
-        } else if s.name != root_name && !prefix.is_empty() && !s.name.starts_with(&prefix) {
-            prefixed
-        } else {
-            s.name.clone()
-        };
-
-        let mut code = String::new();
-        code.push_str(&lang.struct_open(&struct_name));
-        let mut field_pairs: Vec<(String, String)> = Vec::new();
-        for field in &s.fields {
-            let code_name = lang.field_name(&field.json_name);
-            let base_type = match &field.resolved_type {
-                Some(rt) => localize_type(rt, lang),
-                None => lang.type_name(&field.inferred_type),
-            };
-            let resolved_type = if !prefix.is_empty() && !all_schema_names.contains(&base_type) {
-                prefix_type(&base_type, &prefix, &all_schema_names, &root_name)
-            } else {
-                base_type
-            };
-            code.push_str(&lang.field_line(&code_name, &resolved_type, &field.json_name));
-            field_pairs.push((code_name, field.json_name.clone()));
-        }
-        code.push_str(&lang.struct_close(&field_pairs));
-
-        blocks.push(NamedCodeBlock {
-            name: struct_name,
-            code,
-        });
-    }
-
-    blocks
-}
-
-/// Extract bare struct names from a resolved type string like "Option<Vec<Foo>>" → ["Foo"]
-fn extract_struct_names_from_resolved(rt: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let inner = rt
-        .strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
-        .or_else(|| rt.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')));
-    if let Some(inner) = inner {
-        names.extend(extract_struct_names_from_resolved(inner));
-    } else if !rt.is_empty() && rt.chars().next().unwrap().is_ascii_uppercase() {
-        names.push(rt.to_string());
-    }
-    names
-}
-
-/// Prefix struct references in type strings (handles Vec<T>, Option<T>, [T], T?, bare T)
-fn prefix_type(
-    type_str: &str,
-    prefix: &str,
-    shared_names: &std::collections::BTreeSet<String>,
-    root_name: &str,
-) -> String {
-    // Rust: Vec<T>
-    if type_str.starts_with("Vec<") && type_str.ends_with('>') {
-        let inner = &type_str[4..type_str.len() - 1];
-        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
-        format!("Vec<{}>", prefixed_inner)
-    // Rust: Option<T>
-    } else if type_str.starts_with("Option<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
-        format!("Option<{}>", prefixed_inner)
-    // Swift: [T]
-    } else if type_str.starts_with('[') && type_str.ends_with(']') {
-        let inner = &type_str[1..type_str.len() - 1];
-        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
-        format!("[{}]", prefixed_inner)
-    // Swift: T?
-    } else if type_str.ends_with('?') {
-        let inner = &type_str[..type_str.len() - 1];
-        let prefixed_inner = prefix_type(inner, prefix, shared_names, root_name);
-        format!("{}?", prefixed_inner)
-    } else if is_struct_name(type_str)
-        && !shared_names.contains(type_str)
-        && type_str != root_name
-        && !type_str.starts_with(prefix)
-    {
-        format!("{}{}", prefix, type_str)
-    } else {
-        type_str.to_string()
-    }
-}
-
-/// Check if a type name looks like a struct (PascalCase, not a primitive)
-fn is_struct_name(s: &str) -> bool {
-    let first = s.chars().next().unwrap_or('a');
-    first.is_ascii_uppercase()
-        && !s.contains('<')
-        && !s.contains('[')
-        && !matches!(
-            s,
-            // Rust primitives
-            "String" | "Vec" | "Option" | "bool" | "i64" | "u64" | "f64" | "i32" | "u32" | "f32"
-                | "NaiveDate" | "NaiveTime"
-                // Swift primitives
-                | "Bool" | "Int" | "Double" | "Date" | "Any"
-        )
-}
 
 enum LineAction {
     None,

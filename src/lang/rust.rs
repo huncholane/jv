@@ -52,7 +52,7 @@ impl LanguageGenerator for RustGenerator {
 
     fn struct_open(&self, name: &str) -> String {
         format!(
-            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
+            "#[derive(Debug, Clone, Default, Serialize, Deserialize)]\n#[serde(default)]\npub struct {} {{\n",
             name
         )
     }
@@ -67,13 +67,13 @@ impl LanguageGenerator for RustGenerator {
 
     fn enum_open(&self, name: &str) -> String {
         format!(
-            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum {} {{\n",
+            "#[derive(Debug, Clone, Default, Serialize, Deserialize)]\npub enum {} {{\n",
             name
         )
     }
 
     fn enum_close(&self) -> String {
-        "}\n".to_string()
+        "    #[default]\n    #[serde(other)]\n    Unknown,\n}\n".to_string()
     }
 
     fn enum_variant(&self, variant_name: &str, json_value: &str) -> String {
@@ -88,7 +88,16 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn type_name(&self, inferred: &InferredType) -> String {
-        inferred.rust_type()
+        match inferred {
+            // Temporal types vary in format — String is the safe codegen choice
+            InferredType::DateTime | InferredType::Date | InferredType::Time => {
+                "String".to_string()
+            }
+            // Recurse into wrappers so Option<DateTime> → Option<String>, etc.
+            InferredType::Option(inner) => format!("Option<{}>", self.type_name(inner)),
+            InferredType::Array(inner) => format!("Vec<{}>", self.type_name(inner)),
+            _ => inferred.rust_type(),
+        }
     }
 
     fn mod_file(&self, file_names: &[&str]) -> Option<String> {

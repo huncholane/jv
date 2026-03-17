@@ -200,6 +200,379 @@ pub fn localize_type(rust_type: &str, lang: &dyn crate::lang::LanguageGenerator)
     }
 }
 
+/// A generated project file (name + code content)
+pub struct GeneratedProjectFile {
+    pub name: String,
+    pub code: String,
+    /// Root type for each source file that contributed to this group.
+    /// Vec of (source_filename, root_rust_type) — used for deserialization testing.
+    pub root_types: Vec<(String, String)>,
+}
+
+/// Generate all Rust files for a project: shared.rs, per-group files, mod.rs.
+/// This mirrors the code view's `rebuild_file_mode` pipeline exactly.
+pub fn generate_project(
+    parsed_files: &[(String, serde_json::Value)],
+    schema: &crate::schema::SchemaOverview,
+    lang: &dyn crate::lang::LanguageGenerator,
+) -> Vec<GeneratedProjectFile> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let shared_names: BTreeSet<String> = schema.structs.iter().map(|s| s.name.clone()).collect();
+    let unique_names: BTreeSet<String> = schema.unique_structs.iter().map(|s| s.name.clone()).collect();
+    let all_structs = schema.all_structs();
+
+    let mut result = Vec::new();
+
+    // shared.rs
+    if !schema.structs.is_empty() {
+        let code = CodeGenerator::from_schema(&schema.structs).generate_code(lang);
+        result.push(GeneratedProjectFile {
+            name: lang.file_name("shared"),
+            code,
+            root_types: Vec::new(),
+        });
+    }
+
+    // Group files by depluralized first word
+    let mut groups: BTreeMap<String, Vec<(&str, &serde_json::Value)>> = BTreeMap::new();
+    for (filename, value) in parsed_files {
+        let word = first_normal_word(filename)
+            .map(|w| to_pascal_case(&singularize(&w)))
+            .unwrap_or_else(|| "other".to_string());
+        let key = singularize(&word.to_ascii_lowercase());
+        groups.entry(key).or_default().push((filename.as_str(), value));
+    }
+
+    let all_schema_names: BTreeSet<String> = shared_names.iter().chain(unique_names.iter()).cloned().collect();
+
+    for (group_key, files) in &groups {
+        // Collect all struct definitions, merging fields from multiple files
+        let mut struct_order: Vec<String> = Vec::new();
+        let mut struct_defs: BTreeMap<String, Vec<GeneratedField>> = BTreeMap::new();
+        let mut root_types: Vec<(String, String)> = Vec::new();
+        let mut type_aliases: Vec<String> = Vec::new();
+        let mut seen_aliases: BTreeSet<String> = BTreeSet::new();
+
+        for (filename, value) in files {
+            let prefix = first_normal_word(filename)
+                .map(|w| to_pascal_case(&singularize(&w)))
+                .unwrap_or_default();
+            let is_root_array = value.is_array();
+
+            let (root_name, array_item_name) = if is_root_array {
+                let singular = singularize(&prefix);
+                let item_name = if singular.is_empty() {
+                    "Item".to_string()
+                } else {
+                    let mut s = String::new();
+                    s.push(singular.chars().next().unwrap().to_ascii_uppercase());
+                    s.extend(singular.chars().skip(1));
+                    s
+                };
+                (item_name.clone(), Some(item_name))
+            } else {
+                let name = if prefix.is_empty() { "Root".to_string() } else { format!("{}Root", prefix) };
+                (name, None)
+            };
+
+            let deser_type = if is_root_array {
+                format!("Vec<{}>", root_name)
+            } else {
+                root_name.clone()
+            };
+            root_types.push((filename.to_string(), deser_type));
+
+            let mut gen = CodeGenerator::from_value_named(value, &root_name);
+
+            // Schema-aware type resolution
+            resolve_codegen_against_schema(&mut gen, &all_structs, &shared_names);
+
+            // Collect structs, merging duplicates
+            for s in gen.structs.iter().rev() {
+                if shared_names.contains(&s.name) {
+                    continue;
+                }
+
+                let prefixed = format!("{}{}", prefix, s.name);
+                let struct_name = if unique_names.contains(&prefixed) {
+                    prefixed
+                } else if unique_names.contains(&s.name) {
+                    s.name.clone()
+                } else if s.name != root_name && !prefix.is_empty() && !s.name.starts_with(&prefix) {
+                    prefixed
+                } else {
+                    s.name.clone()
+                };
+
+                if let Some(existing) = struct_defs.get_mut(&struct_name) {
+                    // Merge: make fields Optional if missing or Null in this instance
+                    merge_generated_fields(existing, &s.fields);
+                } else {
+                    struct_order.push(struct_name.clone());
+                    struct_defs.insert(struct_name, s.fields.clone());
+                }
+            }
+
+            if let Some(ref item_name) = array_item_name {
+                let alias_name = format!("{}Root", prefix);
+                if !seen_aliases.contains(&alias_name) {
+                    seen_aliases.insert(alias_name.clone());
+                    let aliased = if shared_names.contains(item_name) {
+                        item_name.clone()
+                    } else if !prefix.is_empty() && !item_name.starts_with(&prefix) {
+                        format!("{}{}", prefix, item_name)
+                    } else {
+                        item_name.clone()
+                    };
+                    type_aliases.push(format!("pub type {} = Vec<{}>;\n", alias_name, aliased));
+                }
+            }
+        }
+
+        // Emit code from merged struct definitions
+        let group_prefix = to_pascal_case(&singularize(group_key));
+        let mut struct_blocks: Vec<String> = type_aliases;
+        for struct_name in &struct_order {
+            let fields = &struct_defs[struct_name];
+            let prefix = group_prefix.clone();
+
+            let mut code = String::new();
+            code.push_str(&lang.struct_open(struct_name));
+            let mut field_pairs: Vec<(String, String)> = Vec::new();
+            for field in fields {
+                let code_name = lang.field_name(&field.json_name);
+                let base_type = match &field.resolved_type {
+                    Some(rt) => localize_type(rt, lang),
+                    None => lang.type_name(&field.inferred_type),
+                };
+                let resolved_type = if !prefix.is_empty() && !all_schema_names.contains(&base_type) {
+                    prefix_resolved_type(&base_type, &prefix, &all_schema_names, struct_name)
+                } else {
+                    base_type
+                };
+                code.push_str(&lang.field_line(&code_name, &resolved_type, &field.json_name));
+                field_pairs.push((code_name, field.json_name.clone()));
+            }
+            code.push_str(&lang.struct_close(&field_pairs));
+            struct_blocks.push(code);
+        }
+
+        let mut body = String::new();
+        for block in &struct_blocks {
+            body.push_str(block);
+            body.push('\n');
+        }
+
+        let mut code = String::new();
+        let header = lang.file_header();
+        if !header.is_empty() {
+            code.push_str(&header);
+            code.push('\n');
+        }
+        code.push_str(&lang.imports_header(&body, !shared_names.is_empty()));
+        code.push('\n');
+        code.push_str(&body);
+
+        result.push(GeneratedProjectFile {
+            name: lang.file_name(group_key),
+            code: code.trim_end().to_string() + "\n",
+            root_types,
+        });
+    }
+
+    // mod.rs
+    let mod_names: Vec<&str> = result.iter().map(|f| {
+        f.name.strip_suffix(".rs").unwrap_or(&f.name)
+    }).collect();
+    if let Some(mod_code) = lang.mod_file(&mod_names) {
+        result.push(GeneratedProjectFile {
+            name: "mod.rs".to_string(),
+            code: mod_code,
+            root_types: Vec::new(),
+        });
+    }
+
+    result
+}
+
+/// Resolve types in a CodeGenerator against schema structs, and generate
+/// missing struct definitions from schema when referenced but not present.
+pub fn resolve_codegen_against_schema(
+    gen: &mut CodeGenerator,
+    all_structs: &[crate::schema::SharedStruct],
+    shared_names: &std::collections::BTreeSet<String>,
+) {
+    for s in &mut gen.structs {
+        let schema_match = crate::types::resolve_struct_name(
+            &s.fields.iter().map(|f| (f.json_name.clone(), f.inferred_type.clone())).collect(),
+            all_structs,
+        );
+        let schema_fields = schema_match.and_then(|name| {
+            all_structs.iter().find(|ss| ss.name == name)
+        });
+
+        for field in &mut s.fields {
+            if field.resolved_type.is_none() {
+                field.resolved_type = resolve_type_to_struct(&field.inferred_type, all_structs);
+                if field.resolved_type.is_none() {
+                    if let Some(ss) = schema_fields {
+                        if let Some(schema_type) = ss.fields.get(&field.json_name) {
+                            field.resolved_type = resolve_type_to_struct(schema_type, all_structs);
+                            if field.resolved_type.is_some() {
+                                field.inferred_type = schema_type.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate missing structs from schema
+    let existing_names: std::collections::BTreeSet<String> =
+        gen.structs.iter().map(|s| s.name.clone()).collect();
+    let mut needed: Vec<String> = Vec::new();
+    for s in &gen.structs {
+        for field in &s.fields {
+            if let Some(rt) = &field.resolved_type {
+                for name in extract_struct_names_from_resolved(rt) {
+                    if !existing_names.contains(&name) && !shared_names.contains(&name) {
+                        needed.push(name);
+                    }
+                }
+            }
+        }
+    }
+    let mut added: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    while let Some(name) = needed.pop() {
+        if added.contains(&name) || existing_names.contains(&name) || shared_names.contains(&name) {
+            continue;
+        }
+        added.insert(name.clone());
+        if let Some(ss) = all_structs.iter().find(|ss| ss.name == name) {
+            let fields: Vec<GeneratedField> = ss.fields.iter().map(|(key, typ)| {
+                let resolved = resolve_type_to_struct(typ, all_structs);
+                if let Some(rt) = &resolved {
+                    for dep in extract_struct_names_from_resolved(rt) {
+                        needed.push(dep);
+                    }
+                }
+                GeneratedField {
+                    json_name: key.clone(),
+                    inferred_type: typ.clone(),
+                    resolved_type: resolved,
+                    needs_rename: false,
+                }
+            }).collect();
+            gen.structs.push(GeneratedStruct {
+                name: name.clone(),
+                fields,
+            });
+        }
+    }
+}
+
+/// Merge a new set of fields into an existing field list.
+/// Fields missing from the new set, or whose type is Null, become Option<T>.
+fn merge_generated_fields(existing: &mut Vec<GeneratedField>, new_fields: &[GeneratedField]) {
+    use std::collections::BTreeMap;
+
+    let new_map: BTreeMap<&str, &GeneratedField> = new_fields
+        .iter()
+        .map(|f| (f.json_name.as_str(), f))
+        .collect();
+
+    for field in existing.iter_mut() {
+        match new_map.get(field.json_name.as_str()) {
+            None => {
+                // Field missing in new instance — make it Optional
+                if !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null) {
+                    field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
+                    field.resolved_type = field.resolved_type.take().map(|rt| {
+                        if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
+                    });
+                }
+            }
+            Some(new_field) => {
+                // Field present but type might differ (e.g., String vs Null)
+                if new_field.inferred_type == InferredType::Null
+                    && !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null)
+                {
+                    field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
+                    field.resolved_type = field.resolved_type.take().map(|rt| {
+                        if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
+                    });
+                }
+            }
+        }
+    }
+
+    // Add fields that exist in new but not in existing (as Optional)
+    let existing_names: BTreeSet<String> = existing.iter().map(|f| f.json_name.clone()).collect();
+    for new_field in new_fields {
+        if !existing_names.contains(&new_field.json_name) {
+            let mut field = new_field.clone();
+            if !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null) {
+                field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
+                field.resolved_type = field.resolved_type.take().map(|rt| {
+                    if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
+                });
+            }
+            existing.push(field);
+        }
+    }
+}
+
+fn extract_struct_names_from_resolved(rt: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let inner = rt
+        .strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
+        .or_else(|| rt.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')));
+    if let Some(inner) = inner {
+        names.extend(extract_struct_names_from_resolved(inner));
+    } else if !rt.is_empty() && rt.chars().next().unwrap().is_ascii_uppercase() {
+        names.push(rt.to_string());
+    }
+    names
+}
+
+fn is_struct_name(s: &str) -> bool {
+    let first = s.chars().next().unwrap_or('a');
+    first.is_ascii_uppercase()
+        && !s.contains('<')
+        && !s.contains('[')
+        && !matches!(
+            s,
+            "String" | "Vec" | "Option" | "bool" | "i64" | "u64" | "f64" | "i32" | "u32" | "f32"
+                | "NaiveDate" | "NaiveTime"
+                | "Bool" | "Int" | "Double" | "Date" | "Any"
+        )
+}
+
+fn prefix_resolved_type(
+    type_str: &str,
+    prefix: &str,
+    shared_names: &std::collections::BTreeSet<String>,
+    root_name: &str,
+) -> String {
+    if type_str.starts_with("Vec<") && type_str.ends_with('>') {
+        let inner = &type_str[4..type_str.len() - 1];
+        format!("Vec<{}>", prefix_resolved_type(inner, prefix, shared_names, root_name))
+    } else if type_str.starts_with("Option<") && type_str.ends_with('>') {
+        let inner = &type_str[7..type_str.len() - 1];
+        format!("Option<{}>", prefix_resolved_type(inner, prefix, shared_names, root_name))
+    } else if is_struct_name(type_str)
+        && !shared_names.contains(type_str)
+        && type_str != root_name
+        && !type_str.starts_with(prefix)
+    {
+        format!("{}{}", prefix, type_str)
+    } else {
+        type_str.to_string()
+    }
+}
+
 pub fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
     for (i, ch) in s.chars().enumerate() {
