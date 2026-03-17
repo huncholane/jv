@@ -100,6 +100,14 @@ impl LanguageGenerator for RustGenerator {
         }
     }
 
+    fn wrap_array(&self, inner: &str) -> String {
+        format!("Vec<{}>", inner)
+    }
+
+    fn wrap_optional(&self, inner: &str) -> String {
+        format!("Option<{}>", inner)
+    }
+
     fn mod_file(&self, file_names: &[&str]) -> Option<String> {
         let mut out = String::new();
         for name in file_names {

@@ -76,6 +76,8 @@ pub struct CodeView {
     enum_popup: EnumPopup,
     // Selected code language
     selected_language: crate::lang::CodeLanguage,
+    // Async download state
+    download_rx: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
 }
 
 impl CodeView {
@@ -96,6 +98,7 @@ impl CodeView {
             hidden_fields: BTreeSet::new(),
             enum_popup: EnumPopup::new(),
             selected_language: crate::lang::CodeLanguage::Rust,
+            download_rx: None,
         }
     }
 
@@ -149,20 +152,28 @@ impl CodeView {
         // Rebuild hidden_fields from session state
         self.hidden_fields = hidden_fields.iter().cloned().collect();
 
+        // Poll async download result
+        if let Some(rx) = &self.download_rx {
+            match rx.try_recv() {
+                Ok(Ok(_count)) => { self.download_rx = None; }
+                Ok(Err(_err)) => { self.download_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.download_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
         let enum_count = enum_conversions.len();
         let hidden_count = hidden_fields.len();
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            parsed_files.len().hash(&mut h);
+        let key = crate::widgets::hash_key(|h| {
+            use std::hash::Hash;
+            parsed_files.len().hash(h);
             for (name, _) in parsed_files {
-                name.hash(&mut h);
+                name.hash(h);
             }
-            enum_count.hash(&mut h);
-            hidden_count.hash(&mut h);
-            (self.selected_language as u64).hash(&mut h);
-            h.finish()
-        };
+            enum_count.hash(h);
+            hidden_count.hash(h);
+            (self.selected_language as u64).hash(h);
+        });
         if self.cache_key != key {
             self.rebuild_file_mode(parsed_files, schema);
             self.build_struct_index();
@@ -247,8 +258,7 @@ impl CodeView {
                             prev_was_group = file.is_group;
 
                             let is_selected = idx == self.selected_file;
-                            let row_id = ui.id().with(("code_file", idx));
-                            let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
+                            let (is_hovered, row_id) = crate::widgets::check_hover(ui.ctx(), ui.id().with(("code_file", idx)));
 
                             let bg = if is_selected {
                                 crate::theme::CatppuccinMocha::SURFACE0
@@ -289,7 +299,7 @@ impl CodeView {
                                 .response
                                 .interact(egui::Sense::click());
 
-                            ui.ctx().data_mut(|d| d.insert_temp(row_id, r.hovered()));
+                            crate::widgets::store_hover(ui.ctx(), row_id, r.hovered());
                             if r.clicked() {
                                 clicked_file = Some(idx);
                             }
@@ -589,25 +599,52 @@ impl CodeView {
                 );
                 ui.ctx().copy_text(code);
             }
-            if ui.button(
-                RichText::new(format!("{} Download", egui_phosphor::regular::DOWNLOAD_SIMPLE))
+            let downloading = self.download_rx.is_some();
+            if ui.add_enabled(
+                !downloading,
+                egui::Button::new(
+                    RichText::new(format!("{} {}", egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                        if downloading { "Downloading..." } else { "Download" }))
+                ),
             ).clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    let dl_lang = self.selected_language.generator();
-                    // Write all generated files
-                    for file in &self.files {
-                        let code = filter_hidden_fields_from_code(file, &self.hidden_fields);
-                        let _ = std::fs::write(dir.join(&file.name), code);
-                    }
-                    // Generate mod file if the language supports it
-                    let names: Vec<&str> = self.files.iter()
-                        .filter(|f| f.name != "mod.rs")
-                        .map(|f| f.name.as_str())
-                        .collect();
-                    if let Some(mod_code) = dl_lang.mod_file(&names) {
-                        let _ = std::fs::write(dir.join("mod.rs"), mod_code);
-                    }
-                }
+                // Prepare data for background thread
+                let file_data: Vec<(String, String)> = self.files.iter()
+                    .map(|f| (f.name.clone(), filter_hidden_fields_from_code(f, &self.hidden_fields)))
+                    .collect();
+                let dl_lang = self.selected_language.generator();
+                let names: Vec<String> = self.files.iter()
+                    .filter(|f| f.name != "mod.rs")
+                    .map(|f| f.name.clone())
+                    .collect();
+                let mod_code = {
+                    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                    dl_lang.mod_file(&name_refs)
+                };
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    let result = (|| -> Result<usize, String> {
+                        let dir = rfd::FileDialog::new()
+                            .pick_folder()
+                            .ok_or_else(|| "cancelled".to_string())?;
+                        let mut count = 0;
+                        for (name, code) in &file_data {
+                            std::fs::write(dir.join(name), code)
+                                .map_err(|e| format!("write {}: {}", name, e))?;
+                            count += 1;
+                        }
+                        if let Some(mod_code) = &mod_code {
+                            std::fs::write(dir.join("mod.rs"), mod_code)
+                                .map_err(|e| format!("write mod.rs: {}", e))?;
+                            count += 1;
+                        }
+                        Ok(count)
+                    })();
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
+                });
+                self.download_rx = Some(rx);
             }
             ui.label(
                 RichText::new(format!(

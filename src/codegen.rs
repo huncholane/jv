@@ -12,13 +12,86 @@ pub struct GeneratedStruct {
     pub fields: Vec<GeneratedField>,
 }
 
+/// Structured representation of a resolved type, replacing string-based manipulation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResolvedType {
+    /// A known struct name (e.g., "Passenger")
+    Struct(String),
+    /// Vec<inner>
+    Array(Box<ResolvedType>),
+    /// Option<inner>
+    Optional(Box<ResolvedType>),
+    /// Primitive type — use lang.type_name() to render
+    Inferred(InferredType),
+}
+
+impl ResolvedType {
+    /// Render to language-specific code (e.g., `Vec<Option<Passenger>>` for Rust, `[Passenger?]` for Swift)
+    pub fn to_code(&self, lang: &dyn crate::lang::LanguageGenerator) -> String {
+        match self {
+            ResolvedType::Struct(name) => name.clone(),
+            ResolvedType::Array(inner) => lang.wrap_array(&inner.to_code(lang)),
+            ResolvedType::Optional(inner) => lang.wrap_optional(&inner.to_code(lang)),
+            ResolvedType::Inferred(t) => lang.type_name(t),
+        }
+    }
+
+    /// Prefix struct names that aren't in shared_names and aren't the root
+    pub fn prefix_structs(
+        &self,
+        prefix: &str,
+        shared_names: &std::collections::BTreeSet<String>,
+        root_name: &str,
+    ) -> ResolvedType {
+        match self {
+            ResolvedType::Struct(name) => {
+                if !shared_names.contains(name)
+                    && name != root_name
+                    && !name.starts_with(prefix)
+                {
+                    ResolvedType::Struct(format!("{}{}", prefix, name))
+                } else {
+                    self.clone()
+                }
+            }
+            ResolvedType::Array(inner) => {
+                ResolvedType::Array(Box::new(inner.prefix_structs(prefix, shared_names, root_name)))
+            }
+            ResolvedType::Optional(inner) => {
+                ResolvedType::Optional(Box::new(inner.prefix_structs(prefix, shared_names, root_name)))
+            }
+            ResolvedType::Inferred(_) => self.clone(),
+        }
+    }
+
+    /// Extract all struct names referenced in this type
+    pub fn struct_names(&self) -> Vec<&str> {
+        match self {
+            ResolvedType::Struct(name) => vec![name.as_str()],
+            ResolvedType::Array(inner) | ResolvedType::Optional(inner) => inner.struct_names(),
+            ResolvedType::Inferred(_) => vec![],
+        }
+    }
+
+    /// Wrap in Optional if not already optional
+    pub fn make_optional(self) -> ResolvedType {
+        match self {
+            ResolvedType::Optional(_) => self,
+            other => ResolvedType::Optional(Box::new(other)),
+        }
+    }
+
+    pub fn is_optional(&self) -> bool {
+        matches!(self, ResolvedType::Optional(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GeneratedField {
     pub json_name: String,
     pub inferred_type: InferredType,
-    /// Set when type is a child struct name (e.g., "Passenger", "Vec<Passenger>")
-    /// generate_code uses this instead of lang.type_name() when present
-    pub resolved_type: Option<String>,
+    /// Resolved struct type — None means use inferred_type via lang.type_name()
+    pub resolved_type: Option<ResolvedType>,
     pub needs_rename: bool,
 }
 
@@ -81,14 +154,14 @@ impl CodeGenerator {
                         serde_json::Value::Object(_) => {
                             let child_name = to_pascal_case(key);
                             Self::collect_structs(val, &child_name, structs, seen);
-                            Some(child_name)
+                            Some(ResolvedType::Struct(child_name))
                         }
                         serde_json::Value::Array(arr) => {
                             if let Some(first) = arr.first() {
                                 if first.is_object() {
                                     let child_name = to_pascal_case(&singularize(key));
                                     Self::collect_structs(first, &child_name, structs, seen);
-                                    Some(format!("Vec<{}>", child_name))
+                                    Some(ResolvedType::Array(Box::new(ResolvedType::Struct(child_name))))
                                 } else {
                                     None
                                 }
@@ -109,15 +182,15 @@ impl CodeGenerator {
 
                 // Check if an existing struct with this name has identical fields
                 if seen.contains(name) {
-                    let field_sig: Vec<(&str, &InferredType, Option<&str>)> = fields
+                    let field_sig: Vec<(&str, &InferredType, Option<&ResolvedType>)> = fields
                         .iter()
-                        .map(|f| (f.json_name.as_str(), &f.inferred_type, f.resolved_type.as_deref()))
+                        .map(|f| (f.json_name.as_str(), &f.inferred_type, f.resolved_type.as_ref()))
                         .collect();
                     let already_exists = structs.iter().any(|s| {
                         s.name == name && s.fields.len() == fields.len() && {
-                            let existing_sig: Vec<(&str, &InferredType, Option<&str>)> = s.fields
+                            let existing_sig: Vec<(&str, &InferredType, Option<&ResolvedType>)> = s.fields
                                 .iter()
-                                .map(|f| (f.json_name.as_str(), &f.inferred_type, f.resolved_type.as_deref()))
+                                .map(|f| (f.json_name.as_str(), &f.inferred_type, f.resolved_type.as_ref()))
                                 .collect();
                             existing_sig == field_sig
                         }
@@ -157,7 +230,7 @@ impl CodeGenerator {
             for field in &s.fields {
                 let code_name = lang.field_name(&field.json_name);
                 let type_str = match &field.resolved_type {
-                    Some(rt) => localize_type(rt, lang),
+                    Some(rt) => rt.to_code(lang),
                     None => lang.type_name(&field.inferred_type),
                 };
                 body.push_str(&lang.field_line(&code_name, &type_str, &field.json_name));
@@ -177,26 +250,6 @@ impl CodeGenerator {
         output.push_str(&body);
 
         output
-    }
-}
-
-/// Convert a resolved type (always stored in Rust syntax) to the target language.
-/// Unwraps `Vec<T>` and `Option<T>` wrappers, passes the inner struct name through,
-/// and re-wraps using the language's array/option syntax.
-pub fn localize_type(rust_type: &str, lang: &dyn crate::lang::LanguageGenerator) -> String {
-    if rust_type.starts_with("Vec<") && rust_type.ends_with('>') {
-        let inner = &rust_type[4..rust_type.len() - 1];
-        let localized_inner = localize_type(inner, lang);
-        lang.type_name(&InferredType::Array(Box::new(InferredType::String)))
-            .replace("String", &localized_inner)
-    } else if rust_type.starts_with("Option<") && rust_type.ends_with('>') {
-        let inner = &rust_type[7..rust_type.len() - 1];
-        let localized_inner = localize_type(inner, lang);
-        lang.type_name(&InferredType::Option(Box::new(InferredType::String)))
-            .replace("String", &localized_inner)
-    } else {
-        // Bare struct name — pass through as-is
-        rust_type.to_string()
     }
 }
 
@@ -342,16 +395,18 @@ pub fn generate_project(
             let mut field_pairs: Vec<(String, String)> = Vec::new();
             for field in fields {
                 let code_name = lang.field_name(&field.json_name);
-                let base_type = match &field.resolved_type {
-                    Some(rt) => localize_type(rt, lang),
+                let type_str = match &field.resolved_type {
+                    Some(rt) => {
+                        let prefixed = if !prefix.is_empty() {
+                            rt.prefix_structs(&prefix, &all_schema_names, struct_name)
+                        } else {
+                            rt.clone()
+                        };
+                        prefixed.to_code(lang)
+                    }
                     None => lang.type_name(&field.inferred_type),
                 };
-                let resolved_type = if !prefix.is_empty() && !all_schema_names.contains(&base_type) {
-                    prefix_resolved_type(&base_type, &prefix, &all_schema_names, struct_name)
-                } else {
-                    base_type
-                };
-                code.push_str(&lang.field_line(&code_name, &resolved_type, &field.json_name));
+                code.push_str(&lang.field_line(&code_name, &type_str, &field.json_name));
                 field_pairs.push((code_name, field.json_name.clone()));
             }
             code.push_str(&lang.struct_close(&field_pairs));
@@ -436,9 +491,9 @@ pub fn resolve_codegen_against_schema(
     for s in &gen.structs {
         for field in &s.fields {
             if let Some(rt) = &field.resolved_type {
-                for name in extract_struct_names_from_resolved(rt) {
-                    if !existing_names.contains(&name) && !shared_names.contains(&name) {
-                        needed.push(name);
+                for name in rt.struct_names() {
+                    if !existing_names.contains(name) && !shared_names.contains(name) {
+                        needed.push(name.to_string());
                     }
                 }
             }
@@ -454,8 +509,8 @@ pub fn resolve_codegen_against_schema(
             let fields: Vec<GeneratedField> = ss.fields.iter().map(|(key, typ)| {
                 let resolved = resolve_type_to_struct(typ, all_structs);
                 if let Some(rt) = &resolved {
-                    for dep in extract_struct_names_from_resolved(rt) {
-                        needed.push(dep);
+                    for dep in rt.struct_names() {
+                        needed.push(dep.to_string());
                     }
                 }
                 GeneratedField {
@@ -484,27 +539,16 @@ fn merge_generated_fields(existing: &mut Vec<GeneratedField>, new_fields: &[Gene
         .collect();
 
     for field in existing.iter_mut() {
-        match new_map.get(field.json_name.as_str()) {
-            None => {
-                // Field missing in new instance — make it Optional
-                if !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null) {
-                    field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
-                    field.resolved_type = field.resolved_type.take().map(|rt| {
-                        if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
-                    });
-                }
-            }
-            Some(new_field) => {
-                // Field present but type might differ (e.g., String vs Null)
-                if new_field.inferred_type == InferredType::Null
-                    && !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null)
-                {
-                    field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
-                    field.resolved_type = field.resolved_type.take().map(|rt| {
-                        if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
-                    });
-                }
-            }
+        let should_optionalize = match new_map.get(field.json_name.as_str()) {
+            None => true,
+            Some(new_field) => new_field.inferred_type == InferredType::Null,
+        };
+
+        if should_optionalize
+            && !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null)
+        {
+            field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
+            field.resolved_type = field.resolved_type.take().map(|rt| rt.make_optional());
         }
     }
 
@@ -515,61 +559,10 @@ fn merge_generated_fields(existing: &mut Vec<GeneratedField>, new_fields: &[Gene
             let mut field = new_field.clone();
             if !matches!(field.inferred_type, InferredType::Option(_) | InferredType::Null) {
                 field.inferred_type = InferredType::Option(Box::new(field.inferred_type.clone()));
-                field.resolved_type = field.resolved_type.take().map(|rt| {
-                    if rt.starts_with("Option<") { rt } else { format!("Option<{}>", rt) }
-                });
+                field.resolved_type = field.resolved_type.take().map(|rt| rt.make_optional());
             }
             existing.push(field);
         }
-    }
-}
-
-fn extract_struct_names_from_resolved(rt: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let inner = rt
-        .strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
-        .or_else(|| rt.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')));
-    if let Some(inner) = inner {
-        names.extend(extract_struct_names_from_resolved(inner));
-    } else if !rt.is_empty() && rt.chars().next().unwrap().is_ascii_uppercase() {
-        names.push(rt.to_string());
-    }
-    names
-}
-
-fn is_struct_name(s: &str) -> bool {
-    let first = s.chars().next().unwrap_or('a');
-    first.is_ascii_uppercase()
-        && !s.contains('<')
-        && !s.contains('[')
-        && !matches!(
-            s,
-            "String" | "Vec" | "Option" | "bool" | "i64" | "u64" | "f64" | "i32" | "u32" | "f32"
-                | "NaiveDate" | "NaiveTime"
-                | "Bool" | "Int" | "Double" | "Date" | "Any"
-        )
-}
-
-fn prefix_resolved_type(
-    type_str: &str,
-    prefix: &str,
-    shared_names: &std::collections::BTreeSet<String>,
-    root_name: &str,
-) -> String {
-    if type_str.starts_with("Vec<") && type_str.ends_with('>') {
-        let inner = &type_str[4..type_str.len() - 1];
-        format!("Vec<{}>", prefix_resolved_type(inner, prefix, shared_names, root_name))
-    } else if type_str.starts_with("Option<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        format!("Option<{}>", prefix_resolved_type(inner, prefix, shared_names, root_name))
-    } else if is_struct_name(type_str)
-        && !shared_names.contains(type_str)
-        && type_str != root_name
-        && !type_str.starts_with(prefix)
-    {
-        format!("{}{}", prefix, type_str)
-    } else {
-        type_str.to_string()
     }
 }
 
@@ -679,21 +672,23 @@ pub fn first_normal_word(filename: &str) -> Option<String> {
     None
 }
 
-/// Resolve an InferredType to a struct name if it contains an Object matching a known struct.
+/// Resolve an InferredType to a ResolvedType if it contains an Object matching a known struct.
 /// Recursively handles Vec<Object>, Option<Object>, Option<Vec<Object>>, etc.
 pub fn resolve_type_to_struct(
     typ: &InferredType,
     shared: &[crate::schema::SharedStruct],
-) -> Option<String> {
+) -> Option<ResolvedType> {
     match typ {
-        InferredType::Object(fields) => crate::types::resolve_struct_name(fields, shared),
+        InferredType::Object(fields) => {
+            crate::types::resolve_struct_name(fields, shared).map(ResolvedType::Struct)
+        }
         InferredType::Array(inner) => {
-            let inner_resolved = resolve_type_to_struct(inner, shared);
-            inner_resolved.map(|name| format!("Vec<{}>", name))
+            resolve_type_to_struct(inner, shared)
+                .map(|rt| ResolvedType::Array(Box::new(rt)))
         }
         InferredType::Option(inner) => {
-            let inner_resolved = resolve_type_to_struct(inner, shared);
-            inner_resolved.map(|name| format!("Option<{}>", name))
+            resolve_type_to_struct(inner, shared)
+                .map(|rt| ResolvedType::Optional(Box::new(rt)))
         }
         _ => None,
     }

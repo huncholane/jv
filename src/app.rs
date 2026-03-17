@@ -53,19 +53,20 @@ pub struct JvApp {
     dropped_files: Vec<egui::DroppedFile>,
 
     // FPS tracking
-    frame_times: Vec<f64>,
+    frame_times: std::collections::VecDeque<f64>,
     fps_display: f64,
 
     // Async file dialog results
-    file_dialog_rx: Option<std::sync::mpsc::Receiver<FileDialogResult>>,
+    file_dialog_rx: Option<std::sync::mpsc::Receiver<Vec<ImportedFile>>>,
 
     // Async sample fetch from GitHub
     samples_rx: Option<std::sync::mpsc::Receiver<Vec<SampleFile>>>,
 }
 
-enum FileDialogResult {
-    Files(Vec<std::path::PathBuf>),
-    Directory(std::path::PathBuf),
+struct ImportedFile {
+    filename: String,
+    content: String,
+    source: jv::session::FileSource,
 }
 
 /// Fetched sample file from GitHub
@@ -138,6 +139,50 @@ fn fetch_github_samples(
     });
 }
 
+/// Read a single file into ImportedFile(s). HAR files may produce multiple entries.
+fn read_single_file(path: &std::path::Path) -> Option<Vec<ImportedFile>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let is_har = path.extension().is_some_and(|e| e == "har");
+    if is_har {
+        let har_value: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let files = jv::har::extract_har_files(&har_value);
+        Some(files.into_iter().map(|(filename, value)| {
+            ImportedFile {
+                filename,
+                content: serde_json::to_string_pretty(&value).unwrap_or_default(),
+                source: jv::session::FileSource::Har,
+            }
+        }).collect())
+    } else {
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown.json")
+            .to_string();
+        Some(vec![ImportedFile {
+            filename,
+            content,
+            source: jv::session::FileSource::Json,
+        }])
+    }
+}
+
+/// Read all JSON/HAR files from a directory tree.
+fn read_directory_files(dir: &std::path::Path) -> Vec<ImportedFile> {
+    let mut result = Vec::new();
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "json" || e == "har") {
+            if let Some(files) = read_single_file(path) {
+                result.extend(files);
+            }
+        }
+    }
+    result
+}
+
 impl JvApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Load Phosphor icon font
@@ -187,7 +232,7 @@ impl JvApp {
             sidebar_width: 240.0,
             theme_applied: false,
             dropped_files: Vec::new(),
-            frame_times: Vec::with_capacity(60),
+            frame_times: std::collections::VecDeque::with_capacity(60),
             fps_display: 0.0,
             file_dialog_rx: None,
             samples_rx,
@@ -230,46 +275,6 @@ impl JvApp {
                 loaded.schema = None;
             }
             self.applied_threshold = loaded.session.jaccard_threshold;
-        }
-    }
-
-    fn import_file(&mut self, path: &std::path::Path) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let is_har = path.extension().is_some_and(|e| e == "har");
-            if is_har {
-                if let Ok(har_value) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let files = jv::har::extract_har_files(&har_value);
-                    if let Some(loaded) = &mut self.current_session {
-                        for (filename, value) in &files {
-                            let json_str =
-                                serde_json::to_string_pretty(value).unwrap_or_default();
-                            if loaded.add_file(filename, json_str, jv::session::FileSource::Har).is_ok() {}
-                        }
-                        self.session_manager.update_session(&loaded.session);
-                        self.rebuild_schema();
-                    }
-                }
-            } else {
-                let path_str = path.to_string_lossy().to_string();
-                if let Some(loaded) = &mut self.current_session {
-                    if loaded.add_file(&path_str, content, jv::session::FileSource::Json).is_ok() {
-                        self.session_manager.update_session(&loaded.session);
-                        self.rebuild_schema();
-                    }
-                }
-            }
-        }
-    }
-
-    fn import_directory(&mut self, dir: &std::path::Path) {
-        for entry in walkdir::WalkDir::new(dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|e| e == "json" || e == "har") {
-                self.import_file(path);
-            }
         }
     }
 
@@ -369,7 +374,7 @@ impl JvApp {
                         let ctx = ui.ctx().clone();
                         std::thread::spawn(move || {
                             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                let _ = tx.send(FileDialogResult::Directory(dir));
+                                let _ = tx.send(read_directory_files(&dir));
                                 ctx.request_repaint();
                             }
                         });
@@ -385,7 +390,8 @@ impl JvApp {
                                 .add_filter("JSON & HAR", &["json", "har"])
                                 .pick_files()
                             {
-                                let _ = tx.send(FileDialogResult::Files(paths));
+                                let files = paths.iter().filter_map(|p| read_single_file(p)).flatten().collect();
+                                let _ = tx.send(files);
                                 ctx.request_repaint();
                             }
                         });
@@ -452,8 +458,7 @@ impl JvApp {
                         for (idx, filename, source) in &files {
                             let is_disabled = self.disabled_files.contains(idx);
 
-                            let row_id = ui.id().with(("file_row", idx));
-                            let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
+                            let (is_hovered, row_id) = jv::widgets::check_hover(ui.ctx(), ui.id().with(("file_row", idx)));
 
                             let bg = if is_hovered {
                                 egui::Color32::from_rgba_premultiplied(40, 40, 55, 255)
@@ -489,8 +494,7 @@ impl JvApp {
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         // Trash icon
-                                        let trash_id = ui.id().with(("trash", idx));
-                                        let trash_hovered = ui.ctx().data(|d| d.get_temp::<bool>(trash_id)).unwrap_or(false);
+                                        let (trash_hovered, trash_id) = jv::widgets::check_hover(ui.ctx(), ui.id().with(("trash", idx)));
                                         let trash_color = if trash_hovered {
                                             CatppuccinMocha::RED
                                         } else {
@@ -501,7 +505,7 @@ impl JvApp {
                                                 .color(trash_color)
                                                 .size(12.0),
                                         );
-                                        ui.ctx().data_mut(|d| d.insert_temp(trash_id, rm.hovered()));
+                                        jv::widgets::store_hover(ui.ctx(), trash_id, rm.hovered());
                                         trash_rect = rm.rect;
 
                                         // Eye icon
@@ -549,7 +553,7 @@ impl JvApp {
                                 .response
                                 .interact(egui::Sense::click());
 
-                            ui.ctx().data_mut(|d| d.insert_temp(row_id, r.hovered()));
+                            jv::widgets::store_hover(ui.ctx(), row_id, r.hovered());
 
                             if r.clicked() {
                                 if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
@@ -927,11 +931,20 @@ impl JvApp {
         let files: Vec<egui::DroppedFile> = self.dropped_files.drain(..).collect();
         for file in files {
             if let Some(path) = &file.path {
-                if path.is_dir() {
-                    self.import_directory(path);
+                let imported = if path.is_dir() {
+                    read_directory_files(path)
                 } else if path.extension().is_some_and(|e| e == "json" || e == "har") {
-                    self.import_file(path);
+                    read_single_file(path).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                if let Some(loaded) = &mut self.current_session {
+                    for f in imported {
+                        if loaded.add_file(&f.filename, f.content, f.source).is_ok() {}
+                    }
+                    self.session_manager.update_session(&loaded.session);
                 }
+                self.rebuild_schema();
             } else if let Some(bytes) = &file.bytes {
                 let content = String::from_utf8_lossy(bytes).to_string();
                 let name = file.name.clone();
@@ -956,21 +969,17 @@ impl eframe::App for JvApp {
         // Poll async file dialog results
         if let Some(rx) = &self.file_dialog_rx {
             match rx.try_recv() {
-                Ok(result) => {
-                    match result {
-                        FileDialogResult::Files(paths) => {
-                            for path in paths {
-                                self.import_file(&path);
-                            }
+                Ok(files) => {
+                    if let Some(loaded) = &mut self.current_session {
+                        for f in files {
+                            if loaded.add_file(&f.filename, f.content, f.source).is_ok() {}
                         }
-                        FileDialogResult::Directory(dir) => {
-                            self.import_directory(&dir);
-                        }
+                        self.session_manager.update_session(&loaded.session);
                     }
+                    self.rebuild_schema();
                     self.file_dialog_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // Dialog was cancelled
                     self.file_dialog_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -1031,9 +1040,9 @@ impl eframe::App for JvApp {
 
         // FPS tracking (rolling average of last 60 frames)
         let dt = ctx.input(|i| i.stable_dt) as f64;
-        self.frame_times.push(dt);
+        self.frame_times.push_back(dt);
         if self.frame_times.len() > 60 {
-            self.frame_times.remove(0);
+            self.frame_times.pop_front();
         }
         if !self.frame_times.is_empty() {
             let avg_dt: f64 = self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;

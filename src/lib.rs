@@ -8,3 +8,4 @@ pub mod temporal;
 pub mod theme;
 pub mod types;
 pub mod views;
+pub mod widgets;

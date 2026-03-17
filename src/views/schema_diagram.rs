@@ -234,7 +234,14 @@ impl SchemaDiagramView {
                         let type_display = if let Some(ec) = enum_map.get(f.json_name.as_str()) {
                             ec.enum_name.clone()
                         } else {
-                            f.resolved_type.clone().unwrap_or_else(|| f.inferred_type.rust_type())
+                            match &f.resolved_type {
+                                Some(rt) => {
+                                    // Use Rust syntax for display in diagram
+                                    let rust_lang = crate::lang::rust::RustGenerator;
+                                    rt.to_code(&rust_lang)
+                                }
+                                None => f.inferred_type.rust_type(),
+                            }
                         };
                         let color = crate::theme::type_color(&type_display);
                         (f.json_name.clone(), type_display, color)

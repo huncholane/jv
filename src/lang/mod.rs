@@ -37,6 +37,8 @@ pub trait LanguageGenerator {
     fn enum_close(&self) -> String;
     fn enum_variant(&self, variant_name: &str, json_value: &str) -> String;
     fn type_name(&self, inferred: &InferredType) -> String;
+    fn wrap_array(&self, inner: &str) -> String;
+    fn wrap_optional(&self, inner: &str) -> String;
     fn mod_file(&self, file_names: &[&str]) -> Option<String>;
     fn sanitize_keyword(&self, name: &str) -> String;
     fn field_name(&self, json_name: &str) -> String;

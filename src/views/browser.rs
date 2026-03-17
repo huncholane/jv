@@ -200,55 +200,20 @@ impl BrowserView {
         });
 
         if !jq_has_focus {
-            let down = ui.input(|i| {
-                i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown)
-            });
-            let up = ui.input(|i| {
-                i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp)
-            });
-            let right = ui.input(|i| {
-                i.key_pressed(egui::Key::L)
-                    || i.key_pressed(egui::Key::ArrowRight)
-                    || i.key_pressed(egui::Key::Enter)
-            });
-            let left = ui.input(|i| {
-                i.key_pressed(egui::Key::H)
-                    || i.key_pressed(egui::Key::ArrowLeft)
-                    || i.key_pressed(egui::Key::Backspace)
-            });
-            let go_top = ui.input(|i| i.key_pressed(egui::Key::G));
-            let go_bottom = ui.input(|i| i.key_pressed(egui::Key::End));
-            let go_home = ui.input(|i| i.key_pressed(egui::Key::Home));
-
-            if down && !current_entries.is_empty() {
-                self.selection = (self.selection + 1).min(current_entries.len() - 1);
+            let action = crate::widgets::read_miller_keys(ui, false);
+            if crate::widgets::apply_selection(&mut self.selection, action, current_entries.len()) {
                 self.scroll_to_selection = true;
                 self.sync_jq_from_path();
             }
-            if up {
-                self.selection = self.selection.saturating_sub(1);
-                self.scroll_to_selection = true;
-                self.sync_jq_from_path();
-            }
-            if right {
+            if action == crate::widgets::MillerAction::Enter {
                 if let Some(entry) = current_entries.get(self.selection) {
                     if entry.is_container {
                         self.enter_selected(current, &current_entries);
                     }
                 }
             }
-            if left && !self.path.is_empty() {
+            if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
                 self.go_up();
-            }
-            if go_top || go_home {
-                self.selection = 0;
-                self.scroll_to_selection = true;
-                self.sync_jq_from_path();
-            }
-            if go_bottom && !current_entries.is_empty() {
-                self.selection = current_entries.len() - 1;
-                self.scroll_to_selection = true;
-                self.sync_jq_from_path();
             }
 
             // Copy selected value: c or Ctrl+C
@@ -529,15 +494,7 @@ impl BrowserView {
     }
 
     fn draw_separator(ui: &mut Ui, height: f32) {
-        let sep_rect = ui.available_rect_before_wrap();
-        ui.painter().line_segment(
-            [
-                egui::pos2(sep_rect.left(), sep_rect.top()),
-                egui::pos2(sep_rect.left(), sep_rect.top() + height),
-            ],
-            egui::Stroke::new(1.0, CatppuccinMocha::SURFACE0),
-        );
-        ui.add_space(4.0);
+        crate::widgets::draw_separator(ui, height);
     }
 
     fn render_parent_column(
@@ -641,9 +598,7 @@ impl BrowserView {
                     let entry = &entries[i];
                     let is_selected = i == selection;
 
-                    // Check hover from previous frame
-                    let row_id = ui.id().with(("row", i));
-                    let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
+                    let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
 
                     let bg = if is_selected {
                         CatppuccinMocha::SURFACE0
@@ -758,7 +713,7 @@ impl BrowserView {
                         });
 
                     let response = r.response.interact(egui::Sense::click());
-                    ui.ctx().data_mut(|d| d.insert_temp(row_id, response.hovered()));
+                    crate::widgets::store_hover(ui.ctx(), row_id, response.hovered());
 
                     if response.clicked() && !copy_clicked {
                         clicked = Some(i);

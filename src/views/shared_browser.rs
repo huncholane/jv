@@ -82,32 +82,11 @@ impl SharedBrowserView {
         }
 
         // Keyboard navigation
-        let down = ui.input(|i| {
-            i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown)
-        });
-        let up = ui.input(|i| {
-            i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp)
-        });
-        let right = ui.input(|i| {
-            i.key_pressed(egui::Key::L)
-                || i.key_pressed(egui::Key::ArrowRight)
-                || i.key_pressed(egui::Key::Enter)
-        });
-        let left = ui.input(|i| {
-            i.key_pressed(egui::Key::H)
-                || i.key_pressed(egui::Key::ArrowLeft)
-                || i.key_pressed(egui::Key::Backspace)
-        });
-
-        if down && self.selection + 1 < current_entries.len() {
-            self.selection += 1;
+        let action = crate::widgets::read_miller_keys(ui, false);
+        if crate::widgets::apply_selection(&mut self.selection, action, current_entries.len()) {
             self.scroll_to_selection = true;
         }
-        if up && self.selection > 0 {
-            self.selection -= 1;
-            self.scroll_to_selection = true;
-        }
-        if right {
+        if action == crate::widgets::MillerAction::Enter {
             if let Some(entry) = current_entries.get(self.selection) {
                 if entry.is_container {
                     self.path.push(entry.label.clone());
@@ -116,7 +95,7 @@ impl SharedBrowserView {
                 }
             }
         }
-        if left && !self.path.is_empty() {
+        if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
             let popped = self.path.pop().unwrap();
             self.restore_key = Some(popped);
             self.scroll_to_selection = true;
@@ -368,15 +347,7 @@ fn is_navigable_type(typ: &InferredType, all_structs: &[SharedStruct]) -> bool {
 }
 
 fn draw_separator(ui: &mut Ui, height: f32) {
-    let sep_rect = ui.available_rect_before_wrap();
-    ui.painter().line_segment(
-        [
-            egui::pos2(sep_rect.left(), sep_rect.top()),
-            egui::pos2(sep_rect.left(), sep_rect.top() + height),
-        ],
-        egui::Stroke::new(1.0, CatppuccinMocha::SURFACE0),
-    );
-    ui.add_space(4.0);
+    crate::widgets::draw_separator(ui, height);
 }
 
 /// Compute titles for each of the three panes based on the current navigation path.
@@ -504,9 +475,7 @@ fn render_current_column(
                 let entry = &entries[i];
                 let is_selected = i == selection;
 
-                // Check hover from previous frame via temp storage
-                let row_id = ui.id().with(("row", i));
-                let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
+                let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
 
                 let bg = if is_selected {
                     CatppuccinMocha::SURFACE0
@@ -575,7 +544,7 @@ fn render_current_column(
                     .interact(egui::Sense::click());
 
                 // Store hover state for next frame
-                ui.ctx().data_mut(|d| d.insert_temp(row_id, r.hovered()));
+                crate::widgets::store_hover(ui.ctx(), row_id, r.hovered());
 
                 if scroll_to_selection && is_selected {
                     r.scroll_to_me(Some(egui::Align::Center));
@@ -689,9 +658,7 @@ fn render_values_column(
                         let color = crate::theme::type_color(&short);
                         let is_nav = is_navigable_type(typ, &all);
 
-                        // Hover state from previous frame
-                        let row_id = ui.id().with(("val_row", idx));
-                        let is_hovered = ui.ctx().data(|d| d.get_temp::<bool>(row_id)).unwrap_or(false);
+                        let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), idx);
 
                         let bg = if is_hovered {
                             egui::Color32::from_rgba_unmultiplied(
@@ -748,7 +715,7 @@ fn render_values_column(
                             })
                             .response;
 
-                        ui.ctx().data_mut(|d| d.insert_temp(row_id, row_r.hovered()));
+                        crate::widgets::store_hover(ui.ctx(), row_id, row_r.hovered());
                     }
                 });
         }

@@ -151,6 +151,14 @@ impl LanguageGenerator for SwiftGenerator {
         }
     }
 
+    fn wrap_array(&self, inner: &str) -> String {
+        format!("[{}]", inner)
+    }
+
+    fn wrap_optional(&self, inner: &str) -> String {
+        format!("{}?", inner)
+    }
+
     fn mod_file(&self, _file_names: &[&str]) -> Option<String> {
         None
     }
