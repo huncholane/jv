@@ -42,6 +42,9 @@ pub struct JvApp {
 
     // Disabled (toggled-off) source files by index
     disabled_files: std::collections::BTreeSet<usize>,
+    // Cached active files — avoids cloning every frame
+    cached_active_files: Vec<(String, serde_json::Value)>,
+    cached_active_key: u64,
 
     // UI state
     new_session_name: String,
@@ -227,6 +230,8 @@ impl JvApp {
             last_file_index: usize::MAX,
             last_file_count: 0,
             disabled_files: std::collections::BTreeSet::new(),
+            cached_active_files: Vec::new(),
+            cached_active_key: u64::MAX,
             new_session_name: String::new(),
             show_new_session_dialog: false,
             sidebar_width: 240.0,
@@ -245,17 +250,28 @@ impl JvApp {
     }
 
     /// Get only the enabled (non-disabled) parsed files
-    fn active_parsed_files(&self) -> Vec<(String, serde_json::Value)> {
-        let Some(loaded) = &self.current_session else {
-            return Vec::new();
-        };
-        loaded
-            .parsed_files
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !self.disabled_files.contains(i))
-            .map(|(_, f)| f.clone())
-            .collect()
+    fn ensure_active_files_cache(&mut self) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let file_count = self.current_session.as_ref()
+            .map(|l| l.parsed_files.len()).unwrap_or(0);
+        file_count.hash(&mut h);
+        self.disabled_files.len().hash(&mut h);
+        for &i in &self.disabled_files {
+            i.hash(&mut h);
+        }
+        let key = h.finish();
+        if self.cached_active_key != key {
+            self.cached_active_files = if let Some(loaded) = &self.current_session {
+                loaded.parsed_files.iter().enumerate()
+                    .filter(|(i, _)| !self.disabled_files.contains(i))
+                    .map(|(_, f)| f.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            self.cached_active_key = key;
+        }
     }
 
     fn rebuild_schema(&mut self) {
@@ -799,7 +815,8 @@ impl JvApp {
                     });
                     return;
                 }
-                let active_files = self.active_parsed_files();
+                self.ensure_active_files_cache();
+                let active_files = &self.cached_active_files;
                 let loaded = self.current_session.as_ref().unwrap();
                 let schema = loaded.schema.as_ref().unwrap();
                 let structs = schema.structs.clone();
@@ -874,7 +891,8 @@ impl JvApp {
                     return;
                 }
 
-                let active_files = self.active_parsed_files();
+                self.ensure_active_files_cache();
+                let active_files = &self.cached_active_files;
                 let loaded = self.current_session.as_ref().unwrap();
                 let schema = loaded.schema.as_ref().unwrap();
                 self.shared_browser_view.show(ui, schema, &active_files);
@@ -896,7 +914,8 @@ impl JvApp {
                     });
                     return;
                 }
-                let active_files = self.active_parsed_files();
+                self.ensure_active_files_cache();
+                let active_files = &self.cached_active_files;
                 let loaded = self.current_session.as_ref().unwrap();
                 let schema = loaded.schema.clone();
                 let prev_enums = loaded.session.enum_conversions.clone();

@@ -11,6 +11,22 @@ pub struct SharedBrowserView {
     scroll_to_selection: bool,
     restore_key: Option<String>,
     sort_alpha: bool,
+    /// Cached all_structs — recomputed only when schema changes
+    cached_all: Vec<SharedStruct>,
+    cached_all_key: usize,
+    /// Cached entries — recomputed only when path changes
+    entries_cache_key: Vec<String>,
+    cached_current_entries: Vec<Entry>,
+    cached_parent_entries: Option<Vec<Entry>>,
+    /// Cached values column data: (path, selection_label) -> flattened rows
+    values_cache_key: (Vec<String>, String),
+    values_rows: Vec<ValueRow>,
+}
+
+/// Pre-flattened row for the values column (file headers + values).
+enum ValueRow {
+    FileHeader(String), // display filename
+    Value { text: String, color: egui::Color32, count: Option<usize> },
 }
 
 /// An entry at a given level of the schema tree.
@@ -30,12 +46,23 @@ impl SharedBrowserView {
             scroll_to_selection: false,
             restore_key: None,
             sort_alpha: false,
+            cached_all: Vec::new(),
+            cached_all_key: usize::MAX, // force initial rebuild
+            entries_cache_key: vec!["__invalid__".to_string()], // force initial rebuild
+            cached_current_entries: Vec::new(),
+            cached_parent_entries: None,
+            values_cache_key: (Vec::new(), String::new()),
+            values_rows: Vec::new(),
         }
     }
 
     pub fn invalidate(&mut self) {
         self.path.clear();
         self.selection = 0;
+        self.cached_all_key = usize::MAX;
+        self.entries_cache_key = vec!["__invalid__".to_string()];
+        self.values_cache_key = (Vec::new(), String::new());
+        self.values_rows.clear();
     }
 
     pub fn show(
@@ -55,43 +82,56 @@ impl SharedBrowserView {
             return;
         }
 
-        // Build entries for current level and parent level
-        let mut current_entries = build_entries_at_path(&self.path, schema);
-        if self.sort_alpha && self.path.len() == 1 {
-            current_entries.sort_by(|a, b| a.label.cmp(&b.label));
+        // Cache all_structs — only recompute when schema changes
+        let schema_key = schema.structs.len() + schema.unique_structs.len();
+        if self.cached_all_key != schema_key {
+            self.cached_all = schema.all_structs();
+            self.cached_all_key = schema_key;
         }
-        let parent_entries = if self.path.is_empty() {
-            None
-        } else {
-            Some(build_entries_at_path(
-                &self.path[..self.path.len() - 1],
-                schema,
-            ))
-        };
+        let all = &self.cached_all;
+
+        // Build entries — cached, only recompute when path changes
+        if self.entries_cache_key != self.path {
+            self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+            if self.sort_alpha && self.path.len() == 1 {
+                self.cached_current_entries.sort_by(|a, b| a.label.cmp(&b.label));
+            }
+            self.cached_parent_entries = if self.path.is_empty() {
+                None
+            } else {
+                Some(build_entries_at_path(
+                    &self.path[..self.path.len() - 1],
+                    schema,
+                    all,
+                ))
+            };
+            self.entries_cache_key = self.path.clone();
+        }
 
         // Restore selection by key after going back
         if let Some(key) = self.restore_key.take() {
-            if let Some(idx) = current_entries.iter().position(|e| e.label == key) {
+            if let Some(idx) = self.cached_current_entries.iter().position(|e| e.label == key) {
                 self.selection = idx;
             }
         }
 
         // Clamp selection
-        if !current_entries.is_empty() && self.selection >= current_entries.len() {
-            self.selection = current_entries.len().saturating_sub(1);
+        if !self.cached_current_entries.is_empty() && self.selection >= self.cached_current_entries.len() {
+            self.selection = self.cached_current_entries.len().saturating_sub(1);
         }
 
         // Keyboard navigation
         let action = crate::widgets::read_miller_keys(ui, false);
-        if crate::widgets::apply_selection(&mut self.selection, action, current_entries.len()) {
+        if crate::widgets::apply_selection(&mut self.selection, action, self.cached_current_entries.len()) {
             self.scroll_to_selection = true;
         }
         if action == crate::widgets::MillerAction::Enter {
-            if let Some(entry) = current_entries.get(self.selection) {
+            if let Some(entry) = self.cached_current_entries.get(self.selection) {
                 if entry.is_container {
                     self.path.push(entry.label.clone());
                     self.selection = 0;
                     self.scroll_to_selection = true;
+                    self.entries_cache_key.clear(); // force rebuild next frame
                 }
             }
         }
@@ -99,26 +139,30 @@ impl SharedBrowserView {
             let popped = self.path.pop().unwrap();
             self.restore_key = Some(popped);
             self.scroll_to_selection = true;
+            self.entries_cache_key.clear(); // force rebuild next frame
         }
 
         // 'A' toggles alphabetical sort on the structs pane
         let toggle_sort = ui.input(|i| i.key_pressed(egui::Key::A));
         if toggle_sort && self.path.len() == 1 {
-            let selected_label = current_entries.get(self.selection).map(|e| e.label.clone());
+            let selected_label = self.cached_current_entries.get(self.selection).map(|e| e.label.clone());
             self.sort_alpha = !self.sort_alpha;
-            // Re-sort in place
+            // Invalidate + rebuild
+            self.entries_cache_key.clear();
+            self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
             if self.sort_alpha {
-                current_entries.sort_by(|a, b| a.label.cmp(&b.label));
-            } else {
-                current_entries = build_entries_at_path(&self.path, schema);
+                self.cached_current_entries.sort_by(|a, b| a.label.cmp(&b.label));
             }
-            // Restore selection to the same struct after reordering
+            self.entries_cache_key = self.path.clone();
             if let Some(label) = selected_label {
-                if let Some(idx) = current_entries.iter().position(|e| e.label == label) {
+                if let Some(idx) = self.cached_current_entries.iter().position(|e| e.label == label) {
                     self.selection = idx;
                 }
             }
         }
+        // Re-borrow after potential mutation
+        let current_entries = &self.cached_current_entries;
+        let parent_entries = &self.cached_parent_entries;
 
         // --- Three-column miller layout ---
         let avail = ui.available_rect_before_wrap();
@@ -176,12 +220,22 @@ impl SharedBrowserView {
                 ui.set_height(col_height);
                 render_pane_title(ui, &right_title);
                 if let Some(entry) = current_entries.get(self.selection) {
+                    // Cache the expensive value collection + flattening
+                    let cache_key = (self.path.clone(), entry.label.clone());
+                    if self.values_cache_key != cache_key {
+                        self.values_rows = build_value_rows(
+                            &self.path, &entry.label, schema, &all, files,
+                        );
+                        self.values_cache_key = cache_key;
+                    }
+
                     if let Some(nav) = render_values_column(
                         ui,
                         &self.path,
                         &entry.label,
                         schema,
-                        files,
+                        &all,
+                        &self.values_rows,
                         col_height,
                     ) {
                         type_nav = Some(nav);
@@ -215,7 +269,7 @@ impl SharedBrowserView {
 }
 
 /// Build the list of entries at a given path in the schema tree.
-fn build_entries_at_path(path: &[String], schema: &SchemaOverview) -> Vec<Entry> {
+fn build_entries_at_path(path: &[String], schema: &SchemaOverview, all: &[SharedStruct]) -> Vec<Entry> {
     match path.len() {
         0 => {
             // Root: show "Shared" and "Unique" categories
@@ -269,11 +323,8 @@ fn build_entries_at_path(path: &[String], schema: &SchemaOverview) -> Vec<Entry>
                 return Vec::new();
             };
 
-            // Use all structs (shared + unique) for type resolution and display
-            let all = schema.all_structs();
-
             // Walk remaining path segments to find the current type
-            let current_type = resolve_type_at_path(&root_struct.fields, &path[2..], &all);
+            let current_type = resolve_type_at_path(&root_struct.fields, &path[2..], all);
 
             match current_type {
                 Some(fields) => fields
@@ -556,12 +607,132 @@ fn render_current_column(
 
 /// Render the right column showing all values found for the selected entry.
 /// Returns an optional navigation path if the user clicks a type link.
+/// Build pre-flattened rows for the values column (expensive — cached).
+fn build_value_rows(
+    path: &[String],
+    selected_label: &str,
+    schema: &SchemaOverview,
+    all: &[SharedStruct],
+    files: &[(String, serde_json::Value)],
+) -> Vec<ValueRow> {
+    if path.len() < 2 {
+        return Vec::new();
+    }
+    let structs = match path[0].as_str() {
+        "Shared" => &schema.structs,
+        "Unique" => &schema.unique_structs,
+        _ => return Vec::new(),
+    };
+    let Some(root_struct) = structs.iter().find(|s| s.name == path[1]) else {
+        return Vec::new();
+    };
+
+    let selected_field_type = resolve_type_at_path(&root_struct.fields, &path[2..], all)
+        .and_then(|fields| fields.get(selected_label).cloned());
+    let is_primitive = selected_field_type
+        .as_ref()
+        .map(|t| !is_navigable_type(t, all))
+        .unwrap_or(true);
+
+    let raw_values = collect_values_for_field(path, selected_label, schema, all, files);
+
+    // Group by file
+    let mut per_file: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (val, filename) in &raw_values {
+        if let Some(entry) = per_file.last_mut().filter(|(f, _)| *f == filename.as_str()) {
+            entry.1.push(val.as_str());
+        } else {
+            per_file.push((filename.as_str(), vec![val.as_str()]));
+        }
+    }
+
+    let mut rows = Vec::new();
+    for (filename, values) in &per_file {
+        let display_name = filename.strip_suffix(".json").unwrap_or(filename);
+        rows.push(ValueRow::FileHeader(format!("── {} ──", display_name)));
+
+        if is_primitive {
+            let mut counts: Vec<(&str, usize)> = Vec::new();
+            for val in values {
+                if let Some(entry) = counts.iter_mut().find(|(v, _)| *v == *val) {
+                    entry.1 += 1;
+                } else {
+                    counts.push((val, 1));
+                }
+            }
+            counts.sort_by(|a, b| b.1.cmp(&a.1));
+            for (val_str, count) in counts {
+                let display = if val_str.len() > 60 {
+                    format!("{}…", &val_str[..57])
+                } else {
+                    val_str.to_string()
+                };
+                let color = value_color(val_str);
+                rows.push(ValueRow::Value {
+                    text: display,
+                    color,
+                    count: if count > 1 { Some(count) } else { None },
+                });
+            }
+        } else {
+            for val_str in values {
+                let display = if val_str.len() > 80 {
+                    format!("{}…", &val_str[..77])
+                } else {
+                    val_str.to_string()
+                };
+                let color = value_color(val_str);
+                rows.push(ValueRow::Value { text: display, color, count: None });
+            }
+        }
+    }
+    rows
+}
+
+/// Collect all field values across files (expensive — should be cached).
+fn collect_values_for_field(
+    path: &[String],
+    selected_label: &str,
+    schema: &SchemaOverview,
+    all: &[SharedStruct],
+    files: &[(String, serde_json::Value)],
+) -> Vec<(String, String)> {
+    if path.len() < 2 {
+        return Vec::new();
+    }
+    let structs = match path[0].as_str() {
+        "Shared" => &schema.structs,
+        "Unique" => &schema.unique_structs,
+        _ => return Vec::new(),
+    };
+    let Some(root_struct) = structs.iter().find(|s| s.name == path[1]) else {
+        return Vec::new();
+    };
+    let mut field_path: Vec<&str> = path[2..].iter().map(|s| s.as_str()).collect();
+    field_path.push(selected_label);
+    let field_keys: Vec<&str> = root_struct.fields.keys().map(|k| k.as_str()).collect();
+
+    let mut all_values: Vec<(String, String)> = Vec::new();
+    for (filename, value) in files {
+        if !root_struct.source_files.contains(filename) {
+            continue;
+        }
+        let mut values: Vec<String> = Vec::new();
+        collect_nested_field_values(value, &field_keys, &field_path, &mut values);
+        for v in values {
+            all_values.push((v, filename.clone()));
+        }
+    }
+    all_values
+}
+
 fn render_values_column(
     ui: &mut Ui,
     path: &[String],
     selected_label: &str,
     schema: &SchemaOverview,
-    files: &[(String, serde_json::Value)],
+    all: &[SharedStruct],
+    rows: &[ValueRow],
     height: f32,
 ) -> Option<Vec<String>> {
     let mut nav_target: Option<Vec<String>> = None;
@@ -581,12 +752,14 @@ fn render_values_column(
             );
             ui.add_space(4.0);
 
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
             egui::ScrollArea::vertical()
                 .id_salt("shared_values")
                 .auto_shrink(false)
                 .max_height(height - 24.0)
-                .show(ui, |ui| {
-                    for s in structs {
+                .show_rows(ui, row_height, structs.len(), |ui, range| {
+                    for i in range {
+                        let s = &structs[i];
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(egui_phosphor::regular::BRACKETS_CURLY)
@@ -639,13 +812,15 @@ fn render_values_column(
             );
             ui.add_space(4.0);
 
+            let fields_vec: Vec<(&String, &InferredType)> = s.fields.iter().collect();
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
             egui::ScrollArea::vertical()
                 .id_salt("shared_values")
                 .auto_shrink(false)
                 .max_height(height - 40.0)
-                .show(ui, |ui| {
-                    let all = schema.all_structs();
-                    for (idx, (name, typ)) in s.fields.iter().enumerate() {
+                .show_rows(ui, row_height, fields_vec.len(), |ui, range| {
+                    for idx in range {
+                        let (name, typ) = fields_vec[idx];
                         let short = typ.short_name(&all);
                         let color = crate::theme::type_color(&short);
                         let is_nav = is_navigable_type(typ, &all);
@@ -712,7 +887,7 @@ fn render_values_column(
                 });
         }
         _ => {
-            // Inside a struct — selected is a field name, show all values across files
+            // Inside a struct — show pre-flattened value rows with virtual scrolling
             let structs = match path[0].as_str() {
                 "Shared" => &schema.structs,
                 "Unique" => &schema.unique_structs,
@@ -722,25 +897,13 @@ fn render_values_column(
                 return None;
             };
 
-            // Build the full field path from path[2..] + selected_label
-            let mut field_path: Vec<&str> = path[2..].iter().map(|s| s.as_str()).collect();
-            field_path.push(selected_label);
-
-            let all = schema.all_structs();
-
-            // Get the type of the selected field
-            let selected_field_type = resolve_type_at_path(&root_struct.fields, &path[2..], &all)
+            let selected_field_type = resolve_type_at_path(&root_struct.fields, &path[2..], all)
                 .and_then(|fields| fields.get(selected_label).cloned());
 
             let field_type_str = selected_field_type
                 .as_ref()
-                .map(|t| t.short_name(&all))
+                .map(|t| t.short_name(all))
                 .unwrap_or_default();
-
-            let is_primitive = selected_field_type
-                .as_ref()
-                .map(|t| !is_navigable_type(t, &all))
-                .unwrap_or(true);
 
             ui.label(
                 RichText::new(format!("{}: {}", selected_label, field_type_str))
@@ -749,126 +912,39 @@ fn render_values_column(
             );
             ui.add_space(4.0);
 
-            // Collect field keys for shape matching
-            let field_keys: Vec<&str> = root_struct.fields.keys().map(|k| k.as_str()).collect();
-
-            // Collect all values across all files
-            let mut all_values: Vec<(String, String)> = Vec::new(); // (value, filename)
-            for (filename, value) in files {
-                if !root_struct.source_files.contains(filename) {
-                    continue;
-                }
-                let mut values: Vec<String> = Vec::new();
-                collect_nested_field_values(value, &field_keys, &field_path, &mut values);
-                for v in values {
-                    all_values.push((v, filename.clone()));
-                }
-            }
-
-            // Group values per file for display
-            let mut per_file: Vec<(&str, Vec<&str>)> = Vec::new();
-            for (val, filename) in &all_values {
-                if let Some(entry) = per_file.last_mut().filter(|(f, _)| *f == filename.as_str()) {
-                    entry.1.push(val.as_str());
-                } else {
-                    per_file.push((filename.as_str(), vec![val.as_str()]));
-                }
-            }
-
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
             egui::ScrollArea::vertical()
                 .id_salt("shared_values")
                 .auto_shrink(false)
                 .max_height(height - 24.0)
-                .show(ui, |ui| {
-                    for (filename, values) in &per_file {
-                        let display_name = filename.strip_suffix(".json").unwrap_or(filename);
-
-                        // File separator header
-                        ui.add_space(2.0);
-                        ui.horizontal(|ui| {
-                            let sep_rect = ui.available_rect_before_wrap();
-                            let y = sep_rect.center().y;
-                            let left = sep_rect.left();
-
-                            ui.painter().line_segment(
-                                [egui::pos2(left, y), egui::pos2(left + 8.0, y)],
-                                egui::Stroke::new(1.0, CatppuccinMocha::SURFACE2),
-                            );
-
-                            ui.add_space(10.0);
-                            ui.label(
-                                RichText::new(display_name)
-                                    .color(CatppuccinMocha::YELLOW)
-                                    .family(egui::FontFamily::Monospace)
-                                    .size(11.0),
-                            );
-
-                            let after = ui.available_rect_before_wrap();
-                            ui.painter().line_segment(
-                                [egui::pos2(after.left(), y), egui::pos2(after.right(), y)],
-                                egui::Stroke::new(1.0, CatppuccinMocha::SURFACE2),
-                            );
-                        });
-                        ui.add_space(2.0);
-
-                        if is_primitive {
-                            // Group identical values within this file
-                            let mut counts: Vec<(&str, usize)> = Vec::new();
-                            for val in values {
-                                if let Some(entry) = counts.iter_mut().find(|(v, _)| *v == *val) {
-                                    entry.1 += 1;
-                                } else {
-                                    counts.push((val, 1));
-                                }
+                .show_rows(ui, row_height, rows.len(), |ui, range| {
+                    for i in range {
+                        match &rows[i] {
+                            ValueRow::FileHeader(name) => {
+                                ui.label(
+                                    RichText::new(name)
+                                        .color(CatppuccinMocha::YELLOW)
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(11.0),
+                                );
                             }
-                            counts.sort_by(|a, b| b.1.cmp(&a.1));
-
-                            for (val_str, count) in &counts {
-                                let display = if val_str.len() > 60 {
-                                    format!("{}…", &val_str[..57])
-                                } else {
-                                    val_str.to_string()
-                                };
-
-                                let color = value_color(val_str);
-
+                            ValueRow::Value { text, color, count } => {
                                 ui.horizontal(|ui| {
                                     ui.add_space(4.0);
                                     ui.label(
-                                        RichText::new(&display)
-                                            .color(color)
+                                        RichText::new(text)
+                                            .color(*color)
                                             .family(egui::FontFamily::Monospace)
                                             .size(11.0),
                                     );
-                                    if *count > 1 {
+                                    if let Some(c) = count {
                                         ui.label(
-                                            RichText::new(format!("×{}", count))
+                                            RichText::new(format!("×{}", c))
                                                 .color(CatppuccinMocha::OVERLAY0)
                                                 .family(egui::FontFamily::Monospace)
                                                 .size(10.0),
                                         );
                                     }
-                                });
-                            }
-                        } else {
-                            // Non-primitive: list each value
-                            for val_str in values {
-                                let display = if val_str.len() > 80 {
-                                    format!("{}…", &val_str[..77])
-                                } else {
-                                    val_str.to_string()
-                                };
-
-                                let color = value_color(val_str);
-
-                                ui.horizontal(|ui| {
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        RichText::new(&display)
-                                            .color(color)
-                                            .family(egui::FontFamily::Monospace)
-                                            .size(11.0),
-                                    );
                                 });
                             }
                         }

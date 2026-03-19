@@ -18,6 +18,12 @@ pub struct SchemaOverview {
 
 impl SchemaOverview {
     /// All known structs (shared + unique) for type resolution.
+    /// Returns references — no cloning.
+    pub fn all_structs_ref(&self) -> Vec<&SharedStruct> {
+        self.structs.iter().chain(self.unique_structs.iter()).collect()
+    }
+
+    /// All known structs (shared + unique) as owned vec. Use sparingly (clones).
     pub fn all_structs(&self) -> Vec<SharedStruct> {
         self.structs.iter().chain(self.unique_structs.iter()).cloned().collect()
     }
