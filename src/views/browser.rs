@@ -308,32 +308,26 @@ impl BrowserView {
                 crate::widgets::miller::pane_title(ui, &mid_title);
                 let filter_resp = self.filter.show(ui);
 
-                // Filter entries: (original_index, &Entry)
-                let filtered: Vec<(usize, &Entry)> = current_entries.iter()
-                    .enumerate()
-                    .filter(|(_, e)| self.filter.matches(&e.label))
+                // Filter + snap selection
+                let fr = self.filter.apply(
+                    current_entries.iter().map(|e| &e.label), self.selection,
+                );
+                self.selection = fr.selection;
+                let filtered: Vec<(usize, &Entry)> = fr.indices.iter()
+                    .map(|&i| (i, &current_entries[i]))
                     .collect();
 
                 // Ctrl-N/P navigate filtered entries, Enter accepts
                 if !filtered.is_empty() {
                     if filter_resp.next {
-                        // Find next filtered entry after current selection
-                        let next = filtered.iter()
-                            .find(|(orig, _)| *orig > self.selection)
-                            .or(filtered.first())
-                            .map(|(orig, _)| *orig);
-                        if let Some(idx) = next {
-                            self.selection = idx;
-                        }
+                        let cur_pos = fr.filtered_pos;
+                        let next_pos = (cur_pos + 1).min(filtered.len() - 1);
+                        self.selection = filtered[next_pos].0;
                     }
                     if filter_resp.prev {
-                        let prev = filtered.iter().rev()
-                            .find(|(orig, _)| *orig < self.selection)
-                            .or(filtered.last())
-                            .map(|(orig, _)| *orig);
-                        if let Some(idx) = prev {
-                            self.selection = idx;
-                        }
+                        let cur_pos = fr.filtered_pos;
+                        let prev_pos = cur_pos.saturating_sub(1);
+                        self.selection = filtered[prev_pos].0;
                     }
                     if filter_resp.accept {
                         if let Some(entry) = current_entries.get(self.selection) {
@@ -578,7 +572,10 @@ impl BrowserView {
         let mut clicked = None;
         let mut dbl_clicked: Option<usize> = None;
 
-        self.current_list.selection = self.selection;
+        // Map original selection index → filtered list position
+        let filtered_pos = entries.iter().position(|(orig, _)| *orig == self.selection)
+            .unwrap_or(0);
+        self.current_list.selection = filtered_pos;
         self.current_list.show(
             ui,
             "browser_current",
@@ -704,7 +701,10 @@ impl BrowserView {
             },
         );
 
-        self.selection = self.current_list.selection;
+        // Map filtered position back to original index
+        if let Some((orig, _)) = entries.get(self.current_list.selection) {
+            self.selection = *orig;
+        }
         (clicked, dbl_clicked)
     }
 

@@ -201,6 +201,57 @@ impl MillerFilter {
         }
         fuzzy_matches(&self.query, label)
     }
+
+    /// Filter a list of labels and manage selection mapping.
+    ///
+    /// Takes the original entries' labels and the current selection (original index).
+    /// Returns `FilteredResult` with filtered indices, snapped selection, and the
+    /// position within the filtered list for rendering.
+    pub fn apply(
+        &self,
+        labels: impl Iterator<Item = impl AsRef<str>>,
+        selection: usize,
+    ) -> FilteredResult {
+        let filtered_indices: Vec<usize> = labels
+            .enumerate()
+            .filter(|(_, label)| self.matches(label.as_ref()))
+            .map(|(i, _)| i)
+            .collect();
+
+        let selection = self.snap_selection(selection, &filtered_indices);
+        let filtered_pos = filtered_indices.iter()
+            .position(|&orig| orig == selection)
+            .unwrap_or(0);
+
+        FilteredResult {
+            indices: filtered_indices,
+            selection,
+            filtered_pos,
+        }
+    }
+
+    fn snap_selection(&self, selection: usize, filtered_indices: &[usize]) -> usize {
+        if filtered_indices.is_empty() {
+            return selection;
+        }
+        if filtered_indices.contains(&selection) {
+            return selection;
+        }
+        if let Some(&idx) = filtered_indices.iter().find(|&&orig| orig >= selection) {
+            return idx;
+        }
+        filtered_indices[0]
+    }
+}
+
+/// Result of applying a filter to entries.
+pub struct FilteredResult {
+    /// Original indices that passed the filter.
+    pub indices: Vec<usize>,
+    /// The snapped selection (original index).
+    pub selection: usize,
+    /// Position of the selection within the filtered list (for rendering).
+    pub filtered_pos: usize,
 }
 
 /// Simple fuzzy match: all chars in needle appear in order in haystack (case-insensitive).

@@ -227,36 +227,33 @@ impl SharedBrowserView {
                 render_pane_title(ui, &mid_title);
                 let filter_resp = self.filter.show(ui);
 
-                let filtered: Vec<(usize, &Entry)> = current_entries.iter()
-                    .enumerate()
-                    .filter(|(_, e)| self.filter.matches(&e.label))
+                // Filter + snap selection
+                let fr = self.filter.apply(
+                    current_entries.iter().map(|e| &e.label), self.selection,
+                );
+                self.selection = fr.selection;
+                let filtered: Vec<(usize, &Entry)> = fr.indices.iter()
+                    .map(|&i| (i, &current_entries[i]))
                     .collect();
 
-                // Ctrl-N/P navigate filtered entries, Enter sets flag for post-render
                 if filter_resp.accept {
                     filter_accepted = true;
                 }
                 if !filtered.is_empty() {
                     if filter_resp.next {
-                        let next = filtered.iter()
-                            .find(|(orig, _)| *orig > self.selection)
-                            .or(filtered.first())
-                            .map(|(orig, _)| *orig);
-                        if let Some(idx) = next { self.selection = idx; }
+                        let next_pos = (fr.filtered_pos + 1).min(filtered.len() - 1);
+                        self.selection = filtered[next_pos].0;
                     }
                     if filter_resp.prev {
-                        let prev = filtered.iter().rev()
-                            .find(|(orig, _)| *orig < self.selection)
-                            .or(filtered.last())
-                            .map(|(orig, _)| *orig);
-                        if let Some(idx) = prev { self.selection = idx; }
+                        let prev_pos = fr.filtered_pos.saturating_sub(1);
+                        self.selection = filtered[prev_pos].0;
                     }
                 }
 
                 let (c, d) = render_current_column(
                     ui,
                     &filtered,
-                    self.selection,
+                    fr.filtered_pos,
                     self.scroll_to_selection,
                     col_height,
                 );

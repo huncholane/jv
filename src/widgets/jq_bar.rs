@@ -127,9 +127,13 @@ impl JqBar {
                     let count = self.completions.len();
                     let mut selected: Option<usize> = None;
                     if cycle_down {
-                        self.comp_list.down(count, &mut |idx| { selected = Some(idx); });
+                        self.comp_list.down(count, &mut |idx| {
+                            selected = Some(idx);
+                        });
                     } else if cycle_up {
-                        self.comp_list.up(&mut |idx| { selected = Some(idx); });
+                        self.comp_list.up(&mut |idx| {
+                            selected = Some(idx);
+                        });
                     }
                     if let Some(idx) = selected {
                         let comp = self.completions[idx].clone();
@@ -140,7 +144,8 @@ impl JqBar {
 
                     // Enter/Tab: accept current selection
                     if enter || tab {
-                        accepted_completion = Some(self.completions[self.comp_list.selection].clone());
+                        accepted_completion =
+                            Some(self.completions[self.comp_list.selection].clone());
                     }
                 } else if enter {
                     response.run = true;
@@ -244,7 +249,11 @@ impl JqBar {
                 .into_iter()
                 .filter_map(|path| {
                     let score = fuzzy_score(&needle_lower, &path.to_lowercase());
-                    if score > 0 { Some((score, path)) } else { None }
+                    if score > 0 {
+                        Some((score, path))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -358,7 +367,11 @@ fn fuzzy_score(needle: &str, haystack: &str) -> i64 {
             ni += 1;
         }
     }
-    if ni == needle_chars.len() { score } else { 0 }
+    if ni == needle_chars.len() {
+        score
+    } else {
+        0
+    }
 }
 
 pub fn extract_current_segment(query: &str) -> &str {
