@@ -9,6 +9,8 @@ pub struct ScrollableList {
     pub selection: usize,
     prev_selection: usize,
     force_scroll: bool,
+    /// When set, force this scroll offset on next show() to bring an off-screen selection into view.
+    pending_offset: Option<f32>,
 }
 
 impl ScrollableList {
@@ -17,6 +19,7 @@ impl ScrollableList {
             selection: 0,
             prev_selection: usize::MAX,
             force_scroll: false,
+            pending_offset: None,
         }
     }
 
@@ -62,36 +65,41 @@ impl ScrollableList {
         self.prev_selection = self.selection;
         self.force_scroll = false;
 
-        let visible_h = max_height.unwrap_or(f32::MAX);
-
-        // Set scroll offset directly so show_rows renders the selected row.
-        let scroll_offset = if needs_scroll && visible_h < f32::MAX {
-            let target_y = self.selection as f32 * row_height;
-            let centered = (target_y - visible_h / 2.0 + row_height / 2.0).max(0.0);
-            Some(centered)
-        } else {
-            None
-        };
-
         let mut area = egui::ScrollArea::vertical()
             .id_salt(id_salt)
             .auto_shrink(false);
         if let Some(h) = max_height {
             area = area.max_height(h);
         }
-        if let Some(offset) = scroll_offset {
+        // Apply pending offset from a previous out-of-range jump
+        if let Some(offset) = self.pending_offset.take() {
             area = area.vertical_scroll_offset(offset);
         }
 
         let mut clicked_idx: Option<usize> = None;
+        let selection = self.selection;
 
         area.show_rows(ui, row_height, count, |ui, range| {
+            let in_range = range.contains(&selection);
+
             for i in range {
-                let is_selected = i == self.selection;
+                let is_selected = i == selection;
                 let r = render_row(ui, i, is_selected);
 
+                // scroll_to_me works when the item is in/near the rendered range
+                if needs_scroll && is_selected {
+                    r.scroll_to_me(Some(egui::Align::Center));
+                }
                 if r.clicked() {
                     clicked_idx = Some(i);
+                }
+            }
+
+            // If selection was outside rendered range, queue an offset jump for next frame
+            if needs_scroll && !in_range {
+                if let Some(h) = max_height {
+                    let target_y = selection as f32 * row_height;
+                    self.pending_offset = Some((target_y - h / 2.0 + row_height / 2.0).max(0.0));
                 }
             }
         });

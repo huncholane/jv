@@ -38,8 +38,9 @@ struct Entry {
 pub struct BrowserView {
     path: Vec<PathSegment>,
     selection: usize,
-    scroll_to_selection: bool,
     restore_key: Option<String>,
+    // Scrollable list for the center column
+    current_list: crate::widgets::scrollable_list::ScrollableList,
     // jq bar
     jq_bar: crate::widgets::jq_bar::JqBar,
     jq_synced: bool,
@@ -53,8 +54,9 @@ impl BrowserView {
         Self {
             path: Vec::new(),
             selection: 0,
-            scroll_to_selection: false,
+
             restore_key: None,
+            current_list: crate::widgets::scrollable_list::ScrollableList::new(),
             jq_bar: crate::widgets::jq_bar::JqBar::new(),
             jq_synced: true,
             jq_result: None,
@@ -95,7 +97,7 @@ impl BrowserView {
         if let Some(idx) = display_names.iter().position(|n| n == display_name) {
             self.selection = idx;
         }
-        self.scroll_to_selection = true;
+        // selection changed
         self.sync_jq_from_path();
     }
 
@@ -207,7 +209,7 @@ impl BrowserView {
         if !jq_has_focus {
             let action = crate::widgets::read_miller_keys(ui, false);
             if crate::widgets::apply_selection(&mut self.selection, action, current_entries.len()) {
-                self.scroll_to_selection = true;
+                // selection changed
                 self.sync_jq_from_path();
             }
             if action == crate::widgets::MillerAction::Enter {
@@ -217,7 +219,7 @@ impl BrowserView {
                             // Root: enter a file by name
                             self.path.push(PathSegment::Key(entry.label.clone()));
                             self.selection = 0;
-                            self.scroll_to_selection = true;
+                            // selection changed
                             self.jq_synced = true;
                             self.sync_jq_from_path();
                         } else {
@@ -312,7 +314,7 @@ impl BrowserView {
         // Handle click actions
         if let Some(idx) = clicked_entry {
             self.selection = idx;
-            self.scroll_to_selection = false;
+            // scroll handled by ScrollableList
             self.sync_jq_from_path();
         }
         if let Some(idx) = dbl_clicked_entry {
@@ -322,7 +324,7 @@ impl BrowserView {
                     if self.path.is_empty() {
                         self.path.push(PathSegment::Key(entry.label.clone()));
                         self.selection = 0;
-                        self.scroll_to_selection = true;
+                        // selection changed
                         self.jq_synced = true;
                         self.sync_jq_from_path();
                     } else {
@@ -373,7 +375,7 @@ impl BrowserView {
                     self.jq_synced = true;
                     self.jq_result = None;
                     self.jq_error = None;
-                    self.scroll_to_selection = true;
+                    // selection changed
                 }
             }
         }
@@ -386,7 +388,7 @@ impl BrowserView {
                 self.jq_synced = true;
                 self.jq_result = None;
                 self.jq_error = None;
-                self.scroll_to_selection = true;
+                // selection changed
             }
         } else if resp.run {
             // Manual Enter (no completion) — try as path, then as jq query
@@ -397,7 +399,7 @@ impl BrowserView {
                     self.jq_synced = true;
                     self.jq_result = None;
                     self.jq_error = None;
-                    self.scroll_to_selection = true;
+                    // selection changed
                     return;
                 }
             }
@@ -499,9 +501,6 @@ impl BrowserView {
         current_value: &serde_json::Value,
         height: f32,
     ) -> (Option<usize>, Option<usize>) {
-        let mut clicked = None;
-        let mut dbl_clicked = None;
-
         if entries.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label(
@@ -513,149 +512,137 @@ impl BrowserView {
             return (None, None);
         }
 
-        let scroll_sel = self.scroll_to_selection;
-        self.scroll_to_selection = false;
-        let selection = self.selection;
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
+        let mut clicked = None;
+        let mut dbl_clicked: Option<usize> = None;
 
-        egui::ScrollArea::vertical()
-            .id_salt("browser_current")
-            .auto_shrink(false)
-            .max_height(height)
-            .show(ui, |ui| {
-                for i in 0..entries.len() {
-                    let entry = &entries[i];
-                    let is_selected = i == selection;
+        self.current_list.selection = self.selection;
+        self.current_list.show(
+            ui,
+            "browser_current",
+            entries.len(),
+            row_height,
+            Some(height),
+            &mut |ui, i, is_selected| {
+                let entry = &entries[i];
+                let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
 
-                    let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
+                let bg = if is_selected {
+                    CatppuccinMocha::SURFACE0
+                } else if is_hovered {
+                    egui::Color32::from_rgba_unmultiplied(
+                        entry.color.r(), entry.color.g(), entry.color.b(), 15,
+                    )
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
 
-                    let bg = if is_selected {
-                        CatppuccinMocha::SURFACE0
-                    } else if is_hovered {
-                        egui::Color32::from_rgba_unmultiplied(
-                            entry.color.r(), entry.color.g(), entry.color.b(), 15,
-                        )
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
+                let font_size = if is_hovered && !is_selected { 12.5 } else { 12.0 };
+                let type_size = if is_hovered && !is_selected { 11.5 } else { 11.0 };
+                let preview_size = if is_hovered && !is_selected { 11.5 } else { 11.0 };
 
-                    let font_size = if is_hovered && !is_selected { 12.5 } else { 12.0 };
-                    let type_size = if is_hovered && !is_selected { 11.5 } else { 11.0 };
-                    let preview_size = if is_hovered && !is_selected { 11.5 } else { 11.0 };
-
-                    let mut copy_clicked = false;
-
-                    // Hit-test copy button from previous frame's stored rect
-                    let copy_btn_id = ui.id().with(("copy_btn", i));
-                    if let Some(prev_rect) = ui.ctx().data(|d| d.get_temp::<egui::Rect>(copy_btn_id)) {
-                        if ui.rect_contains_pointer(prev_rect) {
-                            ui.painter().rect_filled(prev_rect, 3.0, CatppuccinMocha::SURFACE1);
-                            ui.painter().text(
-                                prev_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                egui_phosphor::regular::COPY,
-                                egui::FontId::proportional(12.0),
-                                CatppuccinMocha::TEXT,
-                            );
-                            egui::show_tooltip_at_pointer(
-                                ui.ctx(),
-                                ui.layer_id(),
-                                ui.id().with(("copy_tip", i)),
-                                |ui| {
-                                    ui.label("Copy value (c or Ctrl+C)");
-                                },
-                            );
-                            if ui.input(|inp| inp.pointer.any_click()) {
-                                copy_clicked = true;
-                                if let Some(v) = child_value(current_value, i, &entry.label) {
-                                    ui.ctx().copy_text(copy_value_str(v));
-                                }
+                // Hit-test copy button from previous frame
+                let copy_btn_id = ui.id().with(("copy_btn", i));
+                if let Some(prev_rect) = ui.ctx().data(|d| d.get_temp::<egui::Rect>(copy_btn_id)) {
+                    if ui.rect_contains_pointer(prev_rect) {
+                        ui.painter().rect_filled(prev_rect, 3.0, CatppuccinMocha::SURFACE1);
+                        ui.painter().text(
+                            prev_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            egui_phosphor::regular::COPY,
+                            egui::FontId::proportional(12.0),
+                            CatppuccinMocha::TEXT,
+                        );
+                        if ui.input(|inp| inp.pointer.any_click()) {
+                            if let Some(v) = child_value(current_value, i, &entry.label) {
+                                ui.ctx().copy_text(copy_value_str(v));
                             }
                         }
                     }
-
-                    let r = egui::Frame::new()
-                        .fill(bg)
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Copy icon — paint only, no space allocation
-                                let icon_rect = egui::Rect::from_min_size(
-                                    ui.cursor().left_top(),
-                                    egui::vec2(16.0, ui.min_rect().height().max(14.0)),
-                                );
-                                ui.painter().text(
-                                    icon_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    egui_phosphor::regular::COPY,
-                                    egui::FontId::proportional(12.0),
-                                    CatppuccinMocha::OVERLAY0,
-                                );
-                                ui.add_space(16.0);
-                                ui.ctx().data_mut(|d| d.insert_temp(copy_btn_id, icon_rect));
-
-                                // Type icon
-                                ui.label(
-                                    RichText::new(entry.type_icon)
-                                        .color(entry.color)
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(font_size),
-                                );
-                                // Label (key or index)
-                                let label_color = if is_selected || is_hovered {
-                                    entry.color
-                                } else {
-                                    CatppuccinMocha::SUBTEXT0
-                                };
-                                ui.label(
-                                    RichText::new(&entry.label)
-                                        .color(label_color)
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(font_size),
-                                );
-                                // Type label
-                                ui.label(
-                                    RichText::new(&entry.type_label)
-                                        .color(CatppuccinMocha::OVERLAY0)
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(type_size),
-                                );
-                                // Value preview (right-aligned)
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let preview = if entry.preview.len() > 24 {
-                                            format!("{}...", &entry.preview[..21])
-                                        } else {
-                                            entry.preview.clone()
-                                        };
-                                        ui.label(
-                                            RichText::new(preview)
-                                                .color(entry.color)
-                                                .family(egui::FontFamily::Monospace)
-                                                .size(preview_size),
-                                        );
-                                    },
-                                );
-                            });
-                        });
-
-                    let response = r.response.interact(egui::Sense::click());
-                    crate::widgets::store_hover(ui.ctx(), row_id, response.hovered());
-
-                    if response.clicked() && !copy_clicked {
-                        clicked = Some(i);
-                    }
-                    if response.double_clicked() && !copy_clicked {
-                        dbl_clicked = Some(i);
-                    }
-
-                    if is_selected && scroll_sel {
-                        response.scroll_to_me(Some(egui::Align::Center));
-                    }
                 }
-            });
 
+                let r = egui::Frame::new()
+                    .fill(bg)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(6, 1))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // Copy icon
+                            let icon_rect = egui::Rect::from_min_size(
+                                ui.cursor().left_top(),
+                                egui::vec2(16.0, ui.min_rect().height().max(14.0)),
+                            );
+                            ui.painter().text(
+                                icon_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::COPY,
+                                egui::FontId::proportional(12.0),
+                                CatppuccinMocha::OVERLAY0,
+                            );
+                            ui.add_space(16.0);
+                            ui.ctx().data_mut(|d| d.insert_temp(copy_btn_id, icon_rect));
+
+                            // Type icon
+                            ui.label(
+                                RichText::new(entry.type_icon)
+                                    .color(entry.color)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(font_size),
+                            );
+                            // Label
+                            let label_color = if is_selected || is_hovered {
+                                entry.color
+                            } else {
+                                CatppuccinMocha::SUBTEXT0
+                            };
+                            ui.label(
+                                RichText::new(&entry.label)
+                                    .color(label_color)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(font_size),
+                            );
+                            // Type label
+                            ui.label(
+                                RichText::new(&entry.type_label)
+                                    .color(CatppuccinMocha::OVERLAY0)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(type_size),
+                            );
+                            // Preview (right-aligned)
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let preview = if entry.preview.len() > 24 {
+                                        format!("{}...", &entry.preview[..21])
+                                    } else {
+                                        entry.preview.clone()
+                                    };
+                                    ui.label(
+                                        RichText::new(preview)
+                                            .color(entry.color)
+                                            .family(egui::FontFamily::Monospace)
+                                            .size(preview_size),
+                                    );
+                                },
+                            );
+                        });
+                    });
+
+                let response = r.response.interact(egui::Sense::click());
+                crate::widgets::store_hover(ui.ctx(), row_id, response.hovered());
+
+                if response.double_clicked() {
+                    dbl_clicked = Some(i);
+                }
+
+                response
+            },
+            &mut |idx| {
+                clicked = Some(idx);
+            },
+        );
+
+        self.selection = self.current_list.selection;
         (clicked, dbl_clicked)
     }
 
@@ -936,7 +923,7 @@ impl BrowserView {
                 _ => return,
             }
             self.selection = 0;
-            self.scroll_to_selection = true;
+            // selection changed
             self.sync_jq_from_path();
         }
     }
@@ -953,7 +940,7 @@ impl BrowserView {
                     self.restore_key = Some(k);
                 }
             }
-            self.scroll_to_selection = true;
+            // selection changed
             self.sync_jq_from_path();
         }
     }
@@ -1008,7 +995,7 @@ fn resolve_from_files<'a>(
 
 /// Build entries for the root file list (no JSON cloning).
 fn build_file_entries(files: &[(String, serde_json::Value)]) -> Vec<Entry> {
-    files.iter().map(|(name, val)| {
+    let mut entries: Vec<Entry> = files.iter().map(|(name, val)| {
         let display = name.strip_suffix(".json").unwrap_or(name);
         let (icon, color) = type_icon_color(val);
         Entry {
@@ -1019,7 +1006,9 @@ fn build_file_entries(files: &[(String, serde_json::Value)]) -> Vec<Entry> {
             color,
             is_container: true,
         }
-    }).collect()
+    }).collect();
+    entries.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    entries
 }
 
 fn resolve_path<'a>(
@@ -1125,20 +1114,24 @@ fn copy_value_str(v: &serde_json::Value) -> String {
 
 fn build_entries(value: &serde_json::Value) -> Vec<Entry> {
     match value {
-        serde_json::Value::Object(map) => map
-            .iter()
-            .map(|(k, v)| {
-                let (icon, color) = type_icon_color(v);
-                Entry {
-                    label: k.clone(),
-                    type_icon: icon,
-                    type_label: type_label(v),
-                    preview: value_preview(v),
-                    color,
-                    is_container: v.is_object() || v.is_array(),
-                }
-            })
-            .collect(),
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<Entry> = map
+                .iter()
+                .map(|(k, v)| {
+                    let (icon, color) = type_icon_color(v);
+                    Entry {
+                        label: k.clone(),
+                        type_icon: icon,
+                        type_label: type_label(v),
+                        preview: value_preview(v),
+                        color,
+                        is_container: v.is_object() || v.is_array(),
+                    }
+                })
+                .collect();
+            entries.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+            entries
+        }
         serde_json::Value::Array(arr) => arr
             .iter()
             .enumerate()
