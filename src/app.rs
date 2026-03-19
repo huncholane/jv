@@ -8,11 +8,19 @@ use jv::views::{browser::BrowserView, code::CodeView, schema_diagram::SchemaDiag
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppMode {
     Jv,
-    Schema,
     Groups,
+    Schema,
     Code,
     Settings,
 }
+
+const MODE_ORDER: [AppMode; 5] = [
+    AppMode::Jv,
+    AppMode::Groups,
+    AppMode::Schema,
+    AppMode::Code,
+    AppMode::Settings,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewTab {
@@ -699,8 +707,8 @@ impl JvApp {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (mode, label, icon) in [
                 (AppMode::Jv, "jv", regular::BROWSERS),
-                (AppMode::Schema, "Schema", regular::GRAPH),
                 (AppMode::Groups, "Groups", regular::TREE_STRUCTURE),
+                (AppMode::Schema, "Schema", regular::GRAPH),
                 (AppMode::Code, "Code", regular::CODE),
                 (AppMode::Settings, "Settings", regular::GEAR_SIX),
             ] {
@@ -737,6 +745,28 @@ impl JvApp {
                 }
             }
         });
+
+        // Ctrl-H/L: switch between modes
+        let ctrl_l = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::L));
+        let ctrl_h = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::H));
+        if ctrl_l || ctrl_h {
+            let cur = MODE_ORDER.iter().position(|m| *m == self.active_mode).unwrap_or(0);
+            let next = if ctrl_l {
+                (cur + 1) % MODE_ORDER.len()
+            } else {
+                (cur + MODE_ORDER.len() - 1) % MODE_ORDER.len()
+            };
+            let mode = MODE_ORDER[next];
+            self.active_mode = mode;
+            self.active_tab = match mode {
+                AppMode::Jv => ViewTab::Table,
+                AppMode::Schema => ViewTab::Table,
+                AppMode::Groups => ViewTab::Table,
+                AppMode::Code => ViewTab::Code,
+                AppMode::Settings => ViewTab::Table,
+            };
+        }
+
         ui.add_space(2.0);
 
         // Tab bar (conditional per mode)
