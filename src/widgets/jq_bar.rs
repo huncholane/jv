@@ -20,7 +20,7 @@ pub struct JqBarResponse {
 pub struct JqBar {
     pub query: String,
     pub completions: Vec<String>,
-    completion_index: usize,
+    comp_list: super::scrollable_list::ScrollableList,
     show_completions: bool,
     refocus: bool,
 }
@@ -30,7 +30,7 @@ impl JqBar {
         Self {
             query: ".".to_string(),
             completions: Vec::new(),
-            completion_index: 0,
+            comp_list: super::scrollable_list::ScrollableList::new(),
             show_completions: false,
             refocus: false,
         }
@@ -110,28 +110,30 @@ impl JqBar {
                     ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space));
 
                 if self.show_completions && !self.completions.is_empty() {
-                    // Arrow keys / Ctrl-N/P cycle and live-preview the selection
-                    let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                    // Ctrl-N/P or Arrow Down/Up: cycle suggestions
+                    let cycle_down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
                         || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
-                    let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                    let cycle_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
                         || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
-                    if down {
-                        self.completion_index =
-                            (self.completion_index + 1).min(self.completions.len() - 1);
-                        self.apply_completion(&self.completions[self.completion_index].clone());
-                        self.refocus = true;
-                        response.previewing = true;
-                    }
-                    if up {
-                        self.completion_index = self.completion_index.saturating_sub(1);
-                        self.apply_completion(&self.completions[self.completion_index].clone());
+
+                    let moved = if cycle_down {
+                        self.comp_list.down(self.completions.len())
+                    } else if cycle_up {
+                        self.comp_list.up()
+                    } else {
+                        false
+                    };
+
+                    if moved {
+                        let comp = self.completions[self.comp_list.selection].clone();
+                        self.apply_completion(&comp);
                         self.refocus = true;
                         response.previewing = true;
                     }
 
-                    // Enter/Tab: accept current selection and close
-                    if tab || enter {
-                        accepted_completion = Some(self.completions[self.completion_index].clone());
+                    // Enter/Tab: accept current selection
+                    if enter || tab {
+                        accepted_completion = Some(self.completions[self.comp_list.selection].clone());
                     }
                 } else if enter {
                     response.run = true;
@@ -167,49 +169,52 @@ impl JqBar {
 
         // Show completion popup
         if self.show_completions && !self.completions.is_empty() {
-            let mut clicked: Option<String> = None;
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+            let count = self.completions.len();
+            let mut clicked_comp: Option<String> = None;
+
             egui::Frame::new()
                 .fill(CatppuccinMocha::SURFACE0)
                 .inner_margin(6.0)
                 .corner_radius(4.0)
                 .stroke(egui::Stroke::new(1.0, CatppuccinMocha::SURFACE1))
                 .show(ui, |ui| {
-                    ui.set_max_height(200.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("jq_bar_completions")
-                        .show(ui, |ui| {
-                            for (i, comp) in self.completions.iter().enumerate() {
-                                let selected = i == self.completion_index;
-                                let text_color = if selected {
-                                    CatppuccinMocha::BLUE
-                                } else {
-                                    CatppuccinMocha::TEXT
-                                };
-                                let bg = if selected {
-                                    CatppuccinMocha::SURFACE1
-                                } else {
-                                    CatppuccinMocha::SURFACE0
-                                };
-                                let r = ui.add(
-                                    egui::Label::new(
-                                        RichText::new(comp)
-                                            .color(text_color)
-                                            .family(egui::FontFamily::Monospace)
-                                            .background_color(bg),
-                                    )
-                                    .sense(egui::Sense::click()),
-                                );
-                                if selected {
-                                    r.scroll_to_me(Some(egui::Align::Center));
-                                }
-                                if r.clicked() {
-                                    clicked = Some(comp.clone());
-                                }
-                            }
-                        });
+                    let completions = &self.completions;
+                    self.comp_list.show(
+                        ui,
+                        "jq_bar_completions",
+                        count,
+                        row_height,
+                        Some(200.0),
+                        &mut |ui, i, is_selected| {
+                            let text_color = if is_selected {
+                                CatppuccinMocha::BLUE
+                            } else {
+                                CatppuccinMocha::TEXT
+                            };
+                            let bg = if is_selected {
+                                CatppuccinMocha::SURFACE1
+                            } else {
+                                CatppuccinMocha::SURFACE0
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&completions[i])
+                                        .color(text_color)
+                                        .family(egui::FontFamily::Monospace)
+                                        .background_color(bg),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                        },
+                        &mut |idx| {
+                            clicked_comp = Some(completions[idx].clone());
+                        },
+                    );
                 });
-            if let Some(c) = clicked {
-                self.apply_completion(&c);
+
+            if let Some(comp) = clicked_comp {
+                self.apply_completion(&comp);
                 self.show_completions = false;
                 self.refocus = true;
                 response.accepted = true;
@@ -238,7 +243,7 @@ impl JqBar {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             self.completions = scored.into_iter().map(|(_, p)| p).collect();
         }
-        self.completion_index = 0;
+        self.comp_list.reset();
         self.show_completions = !self.completions.is_empty();
     }
 
