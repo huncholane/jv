@@ -18,6 +18,8 @@ pub struct SharedBrowserView {
     entries_cache_key: Vec<String>,
     cached_current_entries: Vec<Entry>,
     cached_parent_entries: Option<Vec<Entry>>,
+    /// Filter for the center column
+    filter: crate::widgets::miller::MillerFilter,
     /// Cached values column data: (path, selection_label) -> flattened rows
     values_cache_key: (Vec<String>, String),
     values_rows: Vec<ValueRow>,
@@ -51,6 +53,7 @@ impl SharedBrowserView {
             entries_cache_key: vec!["__invalid__".to_string()], // force initial rebuild
             cached_current_entries: Vec::new(),
             cached_parent_entries: None,
+            filter: crate::widgets::miller::MillerFilter::new(),
             values_cache_key: (Vec::new(), String::new()),
             values_rows: Vec::new(),
         }
@@ -120,26 +123,47 @@ impl SharedBrowserView {
             self.selection = self.cached_current_entries.len().saturating_sub(1);
         }
 
-        // Keyboard navigation
-        let action = crate::widgets::read_miller_keys(ui, false);
+        // Keyboard navigation (skip when filter has focus)
+        let skip_keys = self.filter.has_focus();
+        if !skip_keys {
+            self.filter.check_activate(ui);
+        }
+
+        let action = crate::widgets::read_miller_keys(ui, skip_keys);
         if crate::widgets::apply_selection(&mut self.selection, action, self.cached_current_entries.len()) {
             self.scroll_to_selection = true;
         }
         if action == crate::widgets::MillerAction::Enter {
             if let Some(entry) = self.cached_current_entries.get(self.selection) {
                 if entry.is_container {
+                    self.filter.active = false;
+                    self.filter.query.clear();
                     self.path.push(entry.label.clone());
                     self.selection = 0;
                     self.scroll_to_selection = true;
-                    self.entries_cache_key.clear(); // force rebuild next frame
+                    // Rebuild immediately so this frame renders the new entries
+                    self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+                    self.cached_parent_entries = Some(build_entries_at_path(
+                        &self.path[..self.path.len() - 1], schema, all,
+                    ));
+                    self.entries_cache_key = self.path.clone();
                 }
             }
         }
         if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
+            self.filter.active = false;
+            self.filter.query.clear();
             let popped = self.path.pop().unwrap();
             self.restore_key = Some(popped);
             self.scroll_to_selection = true;
-            self.entries_cache_key.clear(); // force rebuild next frame
+            // Rebuild immediately
+            self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+            self.cached_parent_entries = if self.path.is_empty() {
+                None
+            } else {
+                Some(build_entries_at_path(&self.path[..self.path.len() - 1], schema, all))
+            };
+            self.entries_cache_key = self.path.clone();
         }
 
         // 'A' toggles alphabetical sort on the structs pane
@@ -173,6 +197,7 @@ impl SharedBrowserView {
         let mut clicked_entry: Option<usize> = None;
         let mut dbl_clicked_entry: Option<usize> = None;
         let mut type_nav: Option<Vec<String>> = None;
+        let mut filter_accepted = false;
 
         // Compute pane titles based on current path
         let (left_title, mid_title, right_title) = pane_titles(
@@ -195,20 +220,49 @@ impl SharedBrowserView {
 
             draw_separator(ui, col_height);
 
-            // Middle: current entries
+            // Middle: current entries (with optional filter)
             ui.vertical(|ui| {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
                 render_pane_title(ui, &mid_title);
+                let filter_resp = self.filter.show(ui);
+
+                let filtered: Vec<(usize, &Entry)> = current_entries.iter()
+                    .enumerate()
+                    .filter(|(_, e)| self.filter.matches(&e.label))
+                    .collect();
+
+                // Ctrl-N/P navigate filtered entries, Enter sets flag for post-render
+                if filter_resp.accept {
+                    filter_accepted = true;
+                }
+                if !filtered.is_empty() {
+                    if filter_resp.next {
+                        let next = filtered.iter()
+                            .find(|(orig, _)| *orig > self.selection)
+                            .or(filtered.first())
+                            .map(|(orig, _)| *orig);
+                        if let Some(idx) = next { self.selection = idx; }
+                    }
+                    if filter_resp.prev {
+                        let prev = filtered.iter().rev()
+                            .find(|(orig, _)| *orig < self.selection)
+                            .or(filtered.last())
+                            .map(|(orig, _)| *orig);
+                        if let Some(idx) = prev { self.selection = idx; }
+                    }
+                }
+
                 let (c, d) = render_current_column(
                     ui,
-                    &current_entries,
+                    &filtered,
                     self.selection,
                     self.scroll_to_selection,
                     col_height,
                 );
-                clicked_entry = c;
-                dbl_clicked_entry = d;
+                // Map filtered index back to original
+                clicked_entry = c.and_then(|fi| filtered.get(fi).map(|(orig, _)| *orig));
+                dbl_clicked_entry = d.and_then(|fi| filtered.get(fi).map(|(orig, _)| *orig));
             });
 
             draw_separator(ui, col_height);
@@ -256,6 +310,28 @@ impl SharedBrowserView {
                     self.path.push(entry.label.clone());
                     self.selection = 0;
                     self.scroll_to_selection = true;
+                    self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+                    self.cached_parent_entries = Some(build_entries_at_path(
+                        &self.path[..self.path.len() - 1], schema, all,
+                    ));
+                    self.entries_cache_key = self.path.clone();
+                }
+            }
+        }
+        // Filter Enter: navigate into selected
+        if filter_accepted {
+            if let Some(entry) = self.cached_current_entries.get(self.selection) {
+                if entry.is_container {
+                    self.filter.active = false;
+                    self.filter.query.clear();
+                    self.path.push(entry.label.clone());
+                    self.selection = 0;
+                    self.scroll_to_selection = true;
+                    self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+                    self.cached_parent_entries = Some(build_entries_at_path(
+                        &self.path[..self.path.len() - 1], schema, all,
+                    ));
+                    self.entries_cache_key = self.path.clone();
                 }
             }
         }
@@ -264,6 +340,13 @@ impl SharedBrowserView {
             self.path = nav_path;
             self.selection = 0;
             self.scroll_to_selection = true;
+            self.cached_current_entries = build_entries_at_path(&self.path, schema, all);
+            self.cached_parent_entries = if self.path.is_empty() {
+                None
+            } else {
+                Some(build_entries_at_path(&self.path[..self.path.len() - 1], schema, all))
+            };
+            self.entries_cache_key = self.path.clone();
         }
     }
 }
@@ -488,7 +571,7 @@ fn render_parent_column(
 
 fn render_current_column(
     ui: &mut Ui,
-    entries: &[Entry],
+    entries: &[(usize, &Entry)],
     selection: usize,
     scroll_to_selection: bool,
     height: f32,
@@ -515,7 +598,7 @@ fn render_current_column(
         .max_height(height)
         .show_rows(ui, row_height, entries.len(), |ui, range| {
             for i in range {
-                let entry = &entries[i];
+                let (_orig_idx, entry) = &entries[i];
                 let is_selected = i == selection;
 
                 let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);

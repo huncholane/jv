@@ -41,6 +41,8 @@ pub struct BrowserView {
     restore_key: Option<String>,
     // Scrollable list for the center column
     current_list: crate::widgets::scrollable_list::ScrollableList,
+    // Filter for the center column
+    filter: crate::widgets::miller::MillerFilter,
     // jq bar
     jq_bar: crate::widgets::jq_bar::JqBar,
     jq_synced: bool,
@@ -57,6 +59,7 @@ impl BrowserView {
 
             restore_key: None,
             current_list: crate::widgets::scrollable_list::ScrollableList::new(),
+            filter: crate::widgets::miller::MillerFilter::new(),
             jq_bar: crate::widgets::jq_bar::JqBar::new(),
             jq_synced: true,
             jq_result: None,
@@ -203,10 +206,17 @@ impl BrowserView {
 
         ui.add_space(4.0);
 
-        // --- Keyboard handling (only when jq input NOT focused) ---
+        // --- Keyboard handling (only when no text input has focus) ---
         let jq_has_focus = crate::widgets::jq_bar::JqBar::has_focus(ui);
+        let filter_has_focus = self.filter.has_focus();
+        let skip_keys = jq_has_focus || filter_has_focus;
 
-        if !jq_has_focus {
+        // '?' activates filter
+        if !skip_keys {
+            self.filter.check_activate(ui);
+        }
+
+        if !skip_keys {
             let action = crate::widgets::read_miller_keys(ui, false);
             if crate::widgets::apply_selection(&mut self.selection, action, current_entries.len()) {
                 // selection changed
@@ -215,11 +225,11 @@ impl BrowserView {
             if action == crate::widgets::MillerAction::Enter {
                 if let Some(entry) = current_entries.get(self.selection) {
                     if entry.is_container {
+                        self.filter.active = false;
+                        self.filter.query.clear();
                         if self.path.is_empty() {
-                            // Root: enter a file by name
                             self.path.push(PathSegment::Key(entry.label.clone()));
                             self.selection = 0;
-                            // selection changed
                             self.jq_synced = true;
                             self.sync_jq_from_path();
                         } else {
@@ -229,6 +239,8 @@ impl BrowserView {
                 }
             }
             if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
+                self.filter.active = false;
+                self.filter.query.clear();
                 self.go_up();
             }
 
@@ -289,14 +301,64 @@ impl BrowserView {
 
             Self::draw_separator(ui, col_height);
 
-            // Middle: current
+            // Middle: current (with optional filter)
             ui.vertical(|ui| {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &mid_title);
-                let (c, d) = self.render_current_column(ui, &current_entries, current, col_height);
-                clicked_entry = c;
-                dbl_clicked_entry = d;
+                let filter_resp = self.filter.show(ui);
+
+                // Filter entries: (original_index, &Entry)
+                let filtered: Vec<(usize, &Entry)> = current_entries.iter()
+                    .enumerate()
+                    .filter(|(_, e)| self.filter.matches(&e.label))
+                    .collect();
+
+                // Ctrl-N/P navigate filtered entries, Enter accepts
+                if !filtered.is_empty() {
+                    if filter_resp.next {
+                        // Find next filtered entry after current selection
+                        let next = filtered.iter()
+                            .find(|(orig, _)| *orig > self.selection)
+                            .or(filtered.first())
+                            .map(|(orig, _)| *orig);
+                        if let Some(idx) = next {
+                            self.selection = idx;
+                        }
+                    }
+                    if filter_resp.prev {
+                        let prev = filtered.iter().rev()
+                            .find(|(orig, _)| *orig < self.selection)
+                            .or(filtered.last())
+                            .map(|(orig, _)| *orig);
+                        if let Some(idx) = prev {
+                            self.selection = idx;
+                        }
+                    }
+                    if filter_resp.accept {
+                        if let Some(entry) = current_entries.get(self.selection) {
+                            if entry.is_container {
+                                self.filter.active = false;
+                                self.filter.query.clear();
+                                if self.path.is_empty() {
+                                    self.path.push(PathSegment::Key(entry.label.clone()));
+                                    self.selection = 0;
+                                    self.jq_synced = true;
+                                    self.sync_jq_from_path();
+                                } else {
+                                    self.enter_selected(current, &current_entries);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (c, d) = self.render_current_column(
+                    ui, &filtered, current, col_height,
+                );
+                // Map filtered index back to original
+                clicked_entry = c.and_then(|fi| filtered.get(fi).map(|(orig, _)| *orig));
+                dbl_clicked_entry = d.and_then(|fi| filtered.get(fi).map(|(orig, _)| *orig));
             });
 
             Self::draw_separator(ui, col_height);
@@ -497,7 +559,7 @@ impl BrowserView {
     fn render_current_column(
         &mut self,
         ui: &mut Ui,
-        entries: &[Entry],
+        entries: &[(usize, &Entry)],
         current_value: &serde_json::Value,
         height: f32,
     ) -> (Option<usize>, Option<usize>) {
@@ -524,7 +586,7 @@ impl BrowserView {
             row_height,
             Some(height),
             &mut |ui, i, is_selected| {
-                let entry = &entries[i];
+                let (orig_idx, entry) = &entries[i];
                 let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
 
                 let bg = if is_selected {

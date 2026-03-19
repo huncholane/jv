@@ -98,6 +98,129 @@ pub fn apply_selection(selection: &mut usize, action: MillerAction, count: usize
     false
 }
 
+/// Response from the filter bar.
+pub struct MillerFilterResponse {
+    /// Ctrl-N or ArrowDown pressed — move selection down
+    pub next: bool,
+    /// Ctrl-P or ArrowUp pressed — move selection up
+    pub prev: bool,
+    /// Enter pressed — navigate into selected entry
+    pub accept: bool,
+    /// Escape pressed — filter closed
+    pub closed: bool,
+}
+
+/// Filter state for a miller column. Activated by `?`, fuzzy-filters entries.
+pub struct MillerFilter {
+    pub active: bool,
+    pub query: String,
+}
+
+impl MillerFilter {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            query: String::new(),
+        }
+    }
+
+    /// Check if `?` was pressed (only when no text input has focus).
+    /// Returns true if the filter was just activated.
+    pub fn check_activate(&mut self, ui: &Ui) -> bool {
+        if !self.active && ui.input(|i| i.key_pressed(egui::Key::Questionmark)) {
+            self.active = true;
+            self.query.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Render the filter input bar.
+    pub fn show(&mut self, ui: &mut Ui) -> MillerFilterResponse {
+        let mut resp = MillerFilterResponse {
+            next: false,
+            prev: false,
+            accept: false,
+            closed: false,
+        };
+
+        if !self.active {
+            return resp;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
+                    .color(crate::theme::CatppuccinMocha::MAUVE)
+                    .size(12.0),
+            );
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .id(egui::Id::new("miller_filter_input"))
+                    .font(egui::FontId::monospace(12.0))
+                    .desired_width(ui.available_width() - 10.0)
+                    .text_color(crate::theme::CatppuccinMocha::GREEN),
+            );
+            r.request_focus();
+
+            // Ctrl-N / ArrowDown: next match
+            resp.next = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
+            // Ctrl-P / ArrowUp: prev match
+            resp.prev = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
+            // Enter: navigate into selection
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                resp.accept = true;
+            }
+            // Escape: close
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                resp.closed = true;
+            }
+        });
+        ui.add_space(2.0);
+
+        if resp.closed {
+            self.active = false;
+            self.query.clear();
+        }
+
+        resp
+    }
+
+    /// Returns true if the filter is active (caller should skip miller keys).
+    pub fn has_focus(&self) -> bool {
+        self.active
+    }
+
+    /// Fuzzy match a label against the query. Returns true if it matches.
+    pub fn matches(&self, label: &str) -> bool {
+        if !self.active || self.query.is_empty() {
+            return true;
+        }
+        fuzzy_matches(&self.query, label)
+    }
+}
+
+/// Simple fuzzy match: all chars in needle appear in order in haystack (case-insensitive).
+fn fuzzy_matches(needle: &str, haystack: &str) -> bool {
+    let mut needle_chars = needle.chars().flat_map(|c| c.to_lowercase());
+    let mut current = match needle_chars.next() {
+        Some(c) => c,
+        None => return true,
+    };
+    for h in haystack.chars().flat_map(|c| c.to_lowercase()) {
+        if h == current {
+            current = match needle_chars.next() {
+                Some(c) => c,
+                None => return true,
+            };
+        }
+    }
+    false
+}
+
 /// Render a pane title above a miller column.
 pub fn pane_title(ui: &mut Ui, title: &str) {
     if title.is_empty() {
