@@ -300,7 +300,11 @@ impl BrowserView {
     }
 
     fn show_jq_bar(&mut self, ui: &mut Ui, root: &serde_json::Value) {
-        let resp = self.jq_bar.show(ui, root);
+        let title = match self.path.first() {
+            Some(PathSegment::Key(k)) => k.as_str(),
+            _ => "",
+        };
+        let resp = self.jq_bar.show(ui, title, root);
 
         if resp.changed {
             self.jq_synced = false;

@@ -53,8 +53,8 @@ impl JqBar {
         self.refocus = true;
     }
 
-    /// Render the jq bar. Caller provides `root` for autocompletion.
-    pub fn show(&mut self, ui: &mut Ui, root: &serde_json::Value) -> JqBarResponse {
+    /// Render the jq bar. `title` is shown to the left of the input (e.g. the current file name).
+    pub fn show(&mut self, ui: &mut Ui, title: &str, root: &serde_json::Value) -> JqBarResponse {
         let mut response = JqBarResponse {
             accepted: false,
             run: false,
@@ -72,6 +72,14 @@ impl JqBar {
                     .color(CatppuccinMocha::MAUVE)
                     .size(14.0),
             );
+            if !title.is_empty() {
+                ui.label(
+                    RichText::new(title)
+                        .color(CatppuccinMocha::OVERLAY1)
+                        .family(egui::FontFamily::Monospace)
+                        .size(11.0),
+                );
+            }
 
             let input_id = Self::input_id();
             let text_response = ui.add(
