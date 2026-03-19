@@ -111,34 +111,46 @@ impl BrowserView {
     /// files: all parsed files. The browser treats them as the root level of the tree.
     /// jq operates on whichever file is currently entered (first path segment = file index).
     pub fn show(&mut self, ui: &mut Ui, files: &[(String, serde_json::Value)]) {
-        // Build a virtual root: an Object keyed by filename
-        let virtual_root = serde_json::Value::Object(
-            files.iter().map(|(name, val)| {
-                let display = name.strip_suffix(".json").unwrap_or(name).to_string();
-                (display, val.clone())
-            }).collect()
-        );
-
         let key = files.len() as u64
             ^ files.iter().map(|(n, _)| n.len() as u64).sum::<u64>() << 8;
         if self.cache_key != key {
             self.cache_key = key;
-            if resolve_path(&virtual_root, &self.path).is_none() {
-                self.path.clear();
-                self.selection = 0;
+            // Validate path still resolves
+            if !self.path.is_empty() {
+                if resolve_from_files(files, &self.path).is_none() {
+                    self.path.clear();
+                    self.selection = 0;
+                }
             }
             self.sync_jq_from_path();
         }
 
-        let current = resolve_path(&virtual_root, &self.path).unwrap_or(&virtual_root);
-        let parent = if self.path.is_empty() {
-            None
+        // Build entries for current + parent level (no cloning)
+        let (current_entries, parent_entries) = if self.path.is_empty() {
+            // Root: file list
+            let entries = build_file_entries(files);
+            (entries, None)
         } else {
-            resolve_path(&virtual_root, &self.path[..self.path.len() - 1])
+            let current = resolve_from_files(files, &self.path);
+            let parent = if self.path.len() == 1 {
+                // Parent is the file list
+                Some(build_file_entries(files))
+            } else {
+                resolve_from_files(files, &self.path[..self.path.len() - 1])
+                    .map(build_entries)
+            };
+            (current.map(build_entries).unwrap_or_default(), parent)
         };
 
-        let current_entries = build_entries(current);
-        let parent_entries = parent.map(|p| build_entries(p));
+        // Resolve current JSON value for child lookups
+        let current_value = if self.path.is_empty() {
+            None
+        } else {
+            resolve_from_files(files, &self.path)
+        };
+        // Fallback for APIs that need a &Value (enter_selected, child_value, render)
+        let empty_obj = serde_json::Value::Object(Default::default());
+        let current = current_value.unwrap_or(&empty_obj);
 
         if let Some(key) = self.restore_key.take() {
             if let Some(idx) = current_entries.iter().position(|e| e.label == key) {
@@ -150,20 +162,25 @@ impl BrowserView {
             self.selection = current_entries.len() - 1;
         }
 
-        let selected_child = current_entries
-            .get(self.selection)
-            .and_then(|e| child_value(current, self.selection, &e.label));
+        let selected_child = if let Some(cv) = current_value {
+            // Inside a file — look up child by key/index
+            current_entries.get(self.selection)
+                .and_then(|e| child_value(cv, self.selection, &e.label))
+        } else {
+            // Root file list — selected entry is a file, look it up directly
+            current_entries.get(self.selection)
+                .and_then(|e| files.iter().find(|(n, _)| {
+                    n.strip_suffix(".json").unwrap_or(n) == e.label
+                }))
+                .map(|(_, v)| v)
+        };
 
         // --- jq bar (operates on the selected file, not the virtual root) ---
-        // The first path segment selects the file; jq runs on that file's value
-        let jq_value = self.path.first().and_then(|seg| {
-            match seg {
-                PathSegment::Key(k) => files.iter().find(|(n, _)| {
-                    n.strip_suffix(".json").unwrap_or(n) == k
-                }).map(|(_, v)| v),
-                _ => None,
-            }
-        });
+        let jq_value = if !self.path.is_empty() {
+            resolve_from_files(files, &self.path[..1])
+        } else {
+            None
+        };
         if let Some(val) = jq_value {
             self.show_jq_bar(ui, val);
         } else {
@@ -196,7 +213,16 @@ impl BrowserView {
             if action == crate::widgets::MillerAction::Enter {
                 if let Some(entry) = current_entries.get(self.selection) {
                     if entry.is_container {
-                        self.enter_selected(current, &current_entries);
+                        if self.path.is_empty() {
+                            // Root: enter a file by name
+                            self.path.push(PathSegment::Key(entry.label.clone()));
+                            self.selection = 0;
+                            self.scroll_to_selection = true;
+                            self.jq_synced = true;
+                            self.sync_jq_from_path();
+                        } else {
+                            self.enter_selected(current, &current_entries);
+                        }
                     }
                 }
             }
@@ -293,7 +319,15 @@ impl BrowserView {
             self.selection = idx;
             if let Some(entry) = current_entries.get(idx) {
                 if entry.is_container {
-                    self.enter_selected(current, &current_entries);
+                    if self.path.is_empty() {
+                        self.path.push(PathSegment::Key(entry.label.clone()));
+                        self.selection = 0;
+                        self.scroll_to_selection = true;
+                        self.jq_synced = true;
+                        self.sync_jq_from_path();
+                    } else {
+                        self.enter_selected(current, &current_entries);
+                    }
                 }
             }
         }
@@ -939,6 +973,54 @@ impl BrowserView {
 }
 
 // --- Helper functions ---
+
+/// Resolve a path starting from the file list. path[0] is a file display name,
+/// remaining segments navigate into that file's JSON value. No cloning.
+fn resolve_from_files<'a>(
+    files: &'a [(String, serde_json::Value)],
+    path: &[PathSegment],
+) -> Option<&'a serde_json::Value> {
+    if path.is_empty() {
+        return None;
+    }
+    // First segment is the file name
+    let file_key = match &path[0] {
+        PathSegment::Key(k) => k,
+        _ => return None,
+    };
+    let (_, root) = files.iter().find(|(n, _)| {
+        n.strip_suffix(".json").unwrap_or(n) == file_key
+    })?;
+    // Navigate remaining segments into the file's JSON
+    let mut current = root;
+    for seg in &path[1..] {
+        match seg {
+            PathSegment::Key(k) => {
+                current = current.as_object()?.get(k)?;
+            }
+            PathSegment::Index(i) => {
+                current = current.as_array()?.get(*i)?;
+            }
+        }
+    }
+    Some(current)
+}
+
+/// Build entries for the root file list (no JSON cloning).
+fn build_file_entries(files: &[(String, serde_json::Value)]) -> Vec<Entry> {
+    files.iter().map(|(name, val)| {
+        let display = name.strip_suffix(".json").unwrap_or(name);
+        let (icon, color) = type_icon_color(val);
+        Entry {
+            label: display.to_string(),
+            type_icon: icon,
+            type_label: type_label(val),
+            preview: value_preview(val),
+            color,
+            is_container: true,
+        }
+    }).collect()
+}
 
 fn resolve_path<'a>(
     root: &'a serde_json::Value,
