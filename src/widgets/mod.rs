@@ -1,5 +1,6 @@
 pub mod cache_guard;
 pub mod hover_row;
+pub mod jq_bar;
 pub mod miller;
 
 pub use cache_guard::{CacheGuard, hash_key};

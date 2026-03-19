@@ -41,15 +41,10 @@ pub struct BrowserView {
     scroll_to_selection: bool,
     restore_key: Option<String>,
     // jq bar
-    jq_input: String,
+    jq_bar: crate::widgets::jq_bar::JqBar,
     jq_synced: bool,
     jq_result: Option<String>,
     jq_error: Option<String>,
-    // completions
-    completions: Vec<String>,
-    completion_index: usize,
-    show_completions: bool,
-    refocus_jq: bool,
     cache_key: u64,
 }
 
@@ -60,14 +55,10 @@ impl BrowserView {
             selection: 0,
             scroll_to_selection: false,
             restore_key: None,
-            jq_input: ".".to_string(),
+            jq_bar: crate::widgets::jq_bar::JqBar::new(),
             jq_synced: true,
             jq_result: None,
             jq_error: None,
-            completions: Vec::new(),
-            completion_index: 0,
-            show_completions: false,
-            refocus_jq: false,
             cache_key: 0,
         }
     }
@@ -194,10 +185,7 @@ impl BrowserView {
         ui.add_space(4.0);
 
         // --- Keyboard handling (only when jq input NOT focused) ---
-        let jq_id = ui.id().with("browser_jq_input");
-        let jq_has_focus = ui.ctx().memory(|m| {
-            m.focused().map_or(false, |f| f == jq_id)
-        });
+        let jq_has_focus = crate::widgets::jq_bar::JqBar::has_focus(ui);
 
         if !jq_has_focus {
             let action = crate::widgets::read_miller_keys(ui, false);
@@ -286,111 +274,23 @@ impl BrowserView {
     }
 
     fn show_jq_bar(&mut self, ui: &mut Ui, root: &serde_json::Value) {
-        let mut run_jq = false;
-        let mut accepted_completion: Option<String> = None;
+        let resp = self.jq_bar.show(ui, root);
 
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(egui_phosphor::regular::FUNNEL)
-                    .color(CatppuccinMocha::MAUVE)
-                    .size(14.0),
-            );
+        if resp.changed {
+            self.jq_synced = false;
+            self.jq_result = None;
+            self.jq_error = None;
+        }
 
-            let jq_id = ui.id().with("browser_jq_input");
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.jq_input)
-                    .id(jq_id)
-                    .font(egui::FontId::monospace(14.0))
-                    .desired_width(ui.available_width() - 10.0)
-                    .text_color(CatppuccinMocha::GREEN),
-            );
+        if resp.escaped {
+            self.jq_synced = true;
+            self.sync_jq_from_path();
+            self.jq_result = None;
+            self.jq_error = None;
+        }
 
-            if self.refocus_jq {
-                response.request_focus();
-                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-                    let ccursor = egui::text::CCursor::new(self.jq_input.len());
-                    state
-                        .cursor
-                        .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
-                    state.store(ui.ctx(), response.id);
-                }
-                self.refocus_jq = false;
-            }
-
-            let has_focus = response.has_focus();
-
-            if has_focus {
-                // Mark as manually edited
-                if response.changed() {
-                    self.jq_synced = false;
-                    self.jq_result = None;
-                    self.jq_error = None;
-                    self.rebuild_completions(root);
-                }
-
-                let tab =
-                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
-                let ctrl_space =
-                    ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space));
-
-                if tab && self.show_completions && !self.completions.is_empty() {
-                    accepted_completion =
-                        Some(self.completions[self.completion_index].clone());
-                }
-                if tab {
-                    response.request_focus();
-                }
-
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    self.show_completions = false;
-                    self.jq_synced = true;
-                    self.sync_jq_from_path();
-                    self.jq_result = None;
-                    self.jq_error = None;
-                    response.surrender_focus();
-                }
-
-                if ctrl_space {
-                    if self.show_completions {
-                        self.show_completions = false;
-                    } else {
-                        self.rebuild_completions(root);
-                    }
-                }
-
-                // Enter: try to navigate to path, or run as jq query
-                if response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    run_jq = true;
-                }
-
-                // Navigate completions
-                if self.show_completions && !self.completions.is_empty() {
-                    let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-                    let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-                    if down {
-                        self.completion_index =
-                            (self.completion_index + 1).min(self.completions.len() - 1);
-                    }
-                    if up {
-                        self.completion_index = self.completion_index.saturating_sub(1);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        accepted_completion =
-                            Some(self.completions[self.completion_index].clone());
-                    }
-                }
-            }
-        });
-
-        // Apply completion
-        if let Some(comp) = accepted_completion {
-            self.apply_completion(&comp);
-            self.show_completions = false;
-            self.refocus_jq = true;
-            // Try to navigate to the completed path
-            if let Some(path) = jq_path_to_segments(&self.jq_input) {
+        if resp.completion_applied {
+            if let Some(path) = jq_path_to_segments(&self.jq_bar.query) {
                 self.path = path;
                 self.selection = 0;
                 self.jq_synced = true;
@@ -399,68 +299,9 @@ impl BrowserView {
             }
         }
 
-        // Show completion popup
-        if self.show_completions && !self.completions.is_empty() {
-            let mut clicked: Option<String> = None;
-            egui::Frame::new()
-                .fill(CatppuccinMocha::SURFACE0)
-                .inner_margin(6.0)
-                .corner_radius(4.0)
-                .stroke(egui::Stroke::new(1.0, CatppuccinMocha::SURFACE1))
-                .show(ui, |ui| {
-                    ui.set_max_height(200.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("browser_completions")
-                        .show(ui, |ui| {
-                            for (i, comp) in self.completions.iter().enumerate() {
-                                let selected = i == self.completion_index;
-                                let text_color = if selected {
-                                    CatppuccinMocha::BLUE
-                                } else {
-                                    CatppuccinMocha::TEXT
-                                };
-                                let bg = if selected {
-                                    CatppuccinMocha::SURFACE1
-                                } else {
-                                    CatppuccinMocha::SURFACE0
-                                };
-                                let r = ui.add(
-                                    egui::Label::new(
-                                        RichText::new(comp)
-                                            .color(text_color)
-                                            .family(egui::FontFamily::Monospace)
-                                            .background_color(bg),
-                                    )
-                                    .sense(egui::Sense::click()),
-                                );
-                                if selected {
-                                    r.scroll_to_me(Some(egui::Align::Center));
-                                }
-                                if r.clicked() {
-                                    clicked = Some(comp.clone());
-                                }
-                            }
-                        });
-                });
-            if let Some(c) = clicked {
-                self.apply_completion(&c);
-                self.show_completions = false;
-                self.refocus_jq = true;
-                if let Some(path) = jq_path_to_segments(&self.jq_input) {
-                    self.path = path;
-                    self.selection = 0;
-                    self.jq_synced = true;
-                    self.jq_result = None;
-                    self.jq_error = None;
-                }
-            }
-        }
-
-        // Execute jq query on Enter
-        if run_jq {
-            self.show_completions = false;
+        if resp.run {
             // First try as navigation path
-            if let Some(path) = jq_path_to_segments(&self.jq_input) {
+            if let Some(path) = jq_path_to_segments(&self.jq_bar.query) {
                 if resolve_path(root, &path).is_some() {
                     self.path = path;
                     self.selection = 0;
@@ -472,7 +313,7 @@ impl BrowserView {
                 }
             }
             // Otherwise run as jq query
-            let result = JqEngine::execute(&self.jq_input, root);
+            let result = JqEngine::execute(&self.jq_bar.query, root);
             if let Some(err) = &result.error {
                 self.jq_error = Some(err.clone());
                 self.jq_result = None;
@@ -482,7 +323,7 @@ impl BrowserView {
             }
         }
 
-        // Show jq error/result inline
+        // Show jq error inline
         if let Some(err) = &self.jq_error {
             ui.label(
                 RichText::new(err)
@@ -1032,48 +873,15 @@ impl BrowserView {
 
     fn sync_jq_from_path(&mut self) {
         if self.jq_synced {
-            // Skip the first path segment (file name) for jq display
             let jq_path = if self.path.len() > 1 {
                 &self.path[1..]
             } else {
                 &[]
             };
-            self.jq_input = path_to_jq(jq_path);
+            self.jq_bar.query = path_to_jq(jq_path);
             self.jq_result = None;
             self.jq_error = None;
         }
-    }
-
-    fn rebuild_completions(&mut self, root: &serde_json::Value) {
-        let segment = extract_current_segment(&self.jq_input);
-        let all_paths = collect_all_paths(root);
-
-        let needle = segment.trim();
-        if needle.is_empty() || needle == "." {
-            self.completions = all_paths;
-        } else {
-            let needle_lower = needle.to_lowercase();
-            let mut scored: Vec<(i64, String)> = all_paths
-                .into_iter()
-                .filter_map(|path| {
-                    let score = fuzzy_score(&needle_lower, &path.to_lowercase());
-                    if score > 0 {
-                        Some((score, path))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            self.completions = scored.into_iter().map(|(_, p)| p).collect();
-        }
-        self.completion_index = 0;
-        self.show_completions = !self.completions.is_empty();
-    }
-
-    fn apply_completion(&mut self, completion: &str) {
-        let (before, _) = split_at_current_segment(&self.jq_input);
-        self.jq_input = format!("{}{}", before, completion);
     }
 }
 
@@ -1330,129 +1138,6 @@ fn colorize_json_token(s: &str) -> egui::Color32 {
 }
 
 // --- Reused from jq.rs ---
-
-fn collect_all_paths(root: &serde_json::Value) -> Vec<String> {
-    let mut all_paths = Vec::new();
-    match root {
-        serde_json::Value::Object(map) => {
-            for (key, val) in map {
-                let path = format!(".{}", key);
-                all_paths.push(path.clone());
-                collect_deep_paths(val, &path, 6, &mut all_paths);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            all_paths.push(".[]".to_string());
-            if let Some(first) = arr.first() {
-                if first.is_object() {
-                    collect_deep_paths(first, ".[]", 6, &mut all_paths);
-                }
-            }
-        }
-        _ => {}
-    }
-    all_paths.sort();
-    all_paths.dedup();
-    all_paths
-}
-
-fn collect_deep_paths(
-    value: &serde_json::Value,
-    prefix: &str,
-    max_depth: usize,
-    out: &mut Vec<String>,
-) {
-    if max_depth == 0 {
-        return;
-    }
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, val) in map {
-                let path = format!("{}.{}", prefix, key);
-                out.push(path.clone());
-                match val {
-                    serde_json::Value::Object(_) => {
-                        collect_deep_paths(val, &path, max_depth - 1, out);
-                    }
-                    serde_json::Value::Array(arr) => {
-                        let arr_path = format!("{}[]", path);
-                        out.push(arr_path.clone());
-                        if let Some(first) = arr.first() {
-                            if first.is_object() {
-                                collect_deep_paths(first, &arr_path, max_depth - 1, out);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            let arr_path = format!("{}[]", prefix);
-            out.push(arr_path.clone());
-            if let Some(first) = arr.first() {
-                if first.is_object() {
-                    collect_deep_paths(first, &arr_path, max_depth - 1, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn fuzzy_score(needle: &str, haystack: &str) -> i64 {
-    let needle_chars: Vec<char> = needle.chars().collect();
-    let haystack_chars: Vec<char> = haystack.chars().collect();
-    if needle_chars.is_empty() {
-        return 1;
-    }
-    if needle_chars.len() > haystack_chars.len() {
-        return 0;
-    }
-    let mut score: i64 = 0;
-    let mut ni = 0;
-    let mut prev_match: Option<usize> = None;
-    for (hi, &hc) in haystack_chars.iter().enumerate() {
-        if ni < needle_chars.len() && hc == needle_chars[ni] {
-            score += 1;
-            if let Some(prev) = prev_match {
-                if hi == prev + 1 {
-                    score += 2;
-                }
-            }
-            if hi > 0 && matches!(haystack_chars[hi - 1], '.' | '[' | ']') {
-                score += 1;
-            }
-            prev_match = Some(hi);
-            ni += 1;
-        }
-    }
-    if ni == needle_chars.len() {
-        score
-    } else {
-        0
-    }
-}
-
-fn extract_current_segment(query: &str) -> &str {
-    let start = query
-        .rfind(|c: char| c == '|' || c == '(' || c == ';')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    query[start..].trim_start()
-}
-
-fn split_at_current_segment(query: &str) -> (&str, &str) {
-    let start = query
-        .rfind(|c: char| c == '|' || c == '(' || c == ';')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let segment_start = query[start..]
-        .find(|c: char| !c.is_whitespace())
-        .map(|offset| start + offset)
-        .unwrap_or(query.len());
-    (&query[..segment_start], &query[segment_start..])
-}
 
 // --- Smart preview helpers ---
 

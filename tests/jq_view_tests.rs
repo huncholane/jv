@@ -1,4 +1,4 @@
-use jv::views::jq::{extract_current_segment, split_at_current_segment, JqView};
+use jv::widgets::jq_bar::{extract_current_segment, split_at_current_segment, JqBar};
 
 #[test]
 fn test_extract_segment_simple() {
@@ -28,7 +28,7 @@ fn test_split_at_segment_simple() {
 #[test]
 fn test_completions_from_root_dot() {
     let root: serde_json::Value = serde_json::json!({"users": [], "metadata": {}});
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = ".".to_string();
     view.rebuild_completions(&root);
     assert!(!view.completions.is_empty(), "rebuild: completions should not be empty for '.'");
@@ -38,7 +38,7 @@ fn test_completions_from_root_dot() {
 #[test]
 fn test_completions_from_empty() {
     let root: serde_json::Value = serde_json::json!({"foo": 1, "bar": 2});
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = String::new();
     view.rebuild_completions(&root);
     assert!(!view.completions.is_empty(), "rebuild: completions should not be empty for empty query");
@@ -47,7 +47,7 @@ fn test_completions_from_empty() {
 #[test]
 fn test_apply_completion_from_dot() {
     let root: serde_json::Value = serde_json::json!({"users": [{"id": 1}]});
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = ".".to_string();
     view.rebuild_completions(&root);
     assert!(!view.completions.is_empty());
@@ -59,7 +59,7 @@ fn test_apply_completion_from_dot() {
 #[test]
 fn test_completions_all_start_with_dot() {
     let root: serde_json::Value = serde_json::json!({"users": [{"id": 1}], "metadata": {"version": "1.0"}});
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = ".".to_string();
     view.rebuild_completions(&root);
     assert!(!view.completions.is_empty());
@@ -71,7 +71,7 @@ fn test_completions_all_start_with_dot() {
 #[test]
 fn test_completions_array_root() {
     let root: serde_json::Value = serde_json::json!([{"alternate2": "val", "name": "test"}]);
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = ".".to_string();
     view.rebuild_completions(&root);
     assert!(!view.completions.is_empty());
@@ -85,7 +85,7 @@ fn test_completions_array_root() {
 #[test]
 fn test_fuzzy_search() {
     let root: serde_json::Value = serde_json::json!({"users": [{"id": 1, "username": "test"}], "metadata": {}});
-    let mut view = JqView::new();
+    let mut view = JqBar::new();
     view.query = ".usrn".to_string(); // fuzzy for "username"
     view.rebuild_completions(&root);
     assert!(view.completions.iter().any(|c| c.contains("username")),
