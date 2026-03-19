@@ -124,16 +124,15 @@ impl JqBar {
                     let cycle_up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
                         || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
 
-                    let moved = if cycle_down {
-                        self.comp_list.down(self.completions.len())
+                    let count = self.completions.len();
+                    let mut selected: Option<usize> = None;
+                    if cycle_down {
+                        self.comp_list.down(count, &mut |idx| { selected = Some(idx); });
                     } else if cycle_up {
-                        self.comp_list.up()
-                    } else {
-                        false
-                    };
-
-                    if moved {
-                        let comp = self.completions[self.comp_list.selection].clone();
+                        self.comp_list.up(&mut |idx| { selected = Some(idx); });
+                    }
+                    if let Some(idx) = selected {
+                        let comp = self.completions[idx].clone();
                         self.apply_completion(&comp);
                         self.refocus = true;
                         response.previewing = true;
