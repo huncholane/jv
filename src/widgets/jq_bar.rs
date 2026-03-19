@@ -4,14 +4,16 @@ use crate::theme::CatppuccinMocha;
 
 /// Response from the jq bar — tells the caller what happened this frame.
 pub struct JqBarResponse {
-    /// Enter was pressed (caller should execute or navigate)
+    /// Enter/Tab/click accepted a completion — navigate to the path
+    pub accepted: bool,
+    /// Enter with no completions — execute as jq query
     pub run: bool,
-    /// Escape was pressed (caller should cancel/reset)
+    /// Escape was pressed — cancel and reset
     pub escaped: bool,
-    /// Query text was edited by the user
+    /// Query text was edited by the user (typing)
     pub changed: bool,
-    /// A completion was accepted (Tab or click)
-    pub completion_applied: bool,
+    /// Cycling through completions — preview the path but don't commit
+    pub previewing: bool,
 }
 
 /// Reusable jq filter bar with fuzzy autocompletion.
@@ -35,26 +37,34 @@ impl JqBar {
     }
 
     /// The egui Id used for the text input (for focus checks).
-    pub fn input_id(ui: &Ui) -> egui::Id {
-        ui.id().with("jq_bar_input")
+    /// Uses a stable global id so callers can check focus from any ui context.
+    pub fn input_id() -> egui::Id {
+        egui::Id::new("jq_bar_input_global")
     }
 
     /// Returns true if the jq bar input currently has focus.
     pub fn has_focus(ui: &Ui) -> bool {
-        let id = Self::input_id(ui);
+        let id = Self::input_id();
         ui.ctx().memory(|m| m.focused().map_or(false, |f| f == id))
+    }
+
+    /// Request focus on the jq bar input next frame.
+    pub fn focus(&mut self) {
+        self.refocus = true;
     }
 
     /// Render the jq bar. Caller provides `root` for autocompletion.
     pub fn show(&mut self, ui: &mut Ui, root: &serde_json::Value) -> JqBarResponse {
         let mut response = JqBarResponse {
+            accepted: false,
             run: false,
             escaped: false,
             changed: false,
-            completion_applied: false,
+            previewing: false,
         };
 
         let mut accepted_completion: Option<String> = None;
+        let suppress_completions = self.refocus; // completion was just applied
 
         ui.horizontal(|ui| {
             ui.label(
@@ -63,7 +73,7 @@ impl JqBar {
                     .size(14.0),
             );
 
-            let input_id = Self::input_id(ui);
+            let input_id = Self::input_id();
             let text_response = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
                     .id(input_id)
@@ -84,22 +94,50 @@ impl JqBar {
                 self.refocus = false;
             }
 
+            // Check focus — Enter causes lost_focus, so check both
             let has_focus = text_response.has_focus();
+            let just_lost_focus = text_response.lost_focus();
 
-            if has_focus {
-                if text_response.changed() {
+            if has_focus || just_lost_focus {
+                if has_focus && text_response.changed() && !suppress_completions {
                     response.changed = true;
                     self.rebuild_completions(root);
                 }
 
                 let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ctrl_space =
                     ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space));
 
-                if tab && self.show_completions && !self.completions.is_empty() {
-                    accepted_completion = Some(self.completions[self.completion_index].clone());
+                if self.show_completions && !self.completions.is_empty() {
+                    // Arrow keys / Ctrl-N/P cycle and live-preview the selection
+                    let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                        || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
+                    let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                        || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
+                    if down {
+                        self.completion_index =
+                            (self.completion_index + 1).min(self.completions.len() - 1);
+                        self.apply_completion(&self.completions[self.completion_index].clone());
+                        self.refocus = true;
+                        response.previewing = true;
+                    }
+                    if up {
+                        self.completion_index = self.completion_index.saturating_sub(1);
+                        self.apply_completion(&self.completions[self.completion_index].clone());
+                        self.refocus = true;
+                        response.previewing = true;
+                    }
+
+                    // Enter/Tab: accept current selection and close
+                    if tab || enter {
+                        accepted_completion = Some(self.completions[self.completion_index].clone());
+                    }
+                } else if enter {
+                    response.run = true;
                 }
-                if tab {
+
+                if tab && !self.show_completions {
                     text_response.request_focus();
                 }
 
@@ -116,38 +154,15 @@ impl JqBar {
                         self.rebuild_completions(root);
                     }
                 }
-
-                // Enter: signal caller to execute/navigate
-                if text_response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    response.run = true;
-                }
-
-                // Navigate completions
-                if self.show_completions && !self.completions.is_empty() {
-                    let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-                    let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-                    if down {
-                        self.completion_index =
-                            (self.completion_index + 1).min(self.completions.len() - 1);
-                    }
-                    if up {
-                        self.completion_index = self.completion_index.saturating_sub(1);
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        accepted_completion = Some(self.completions[self.completion_index].clone());
-                    }
-                }
             }
         });
 
-        // Apply completion
+        // Apply completion — sets the query, closes suggestions, signals caller to navigate
         if let Some(comp) = accepted_completion {
             self.apply_completion(&comp);
             self.show_completions = false;
             self.refocus = true;
-            response.completion_applied = true;
+            response.accepted = true;
         }
 
         // Show completion popup
@@ -197,7 +212,7 @@ impl JqBar {
                 self.apply_completion(&c);
                 self.show_completions = false;
                 self.refocus = true;
-                response.completion_applied = true;
+                response.accepted = true;
             }
         }
 

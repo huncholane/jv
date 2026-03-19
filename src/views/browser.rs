@@ -204,6 +204,11 @@ impl BrowserView {
                 self.go_up();
             }
 
+            // '/' focuses the jq bar
+            if ui.input(|i| i.key_pressed(egui::Key::Slash)) {
+                self.jq_bar.focus();
+            }
+
             // Copy selected value: c or Ctrl+C
             let copy = ui.input(|i| i.key_pressed(egui::Key::C))
                 || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C));
@@ -289,21 +294,46 @@ impl BrowserView {
             self.jq_error = None;
         }
 
-        if resp.completion_applied {
-            if let Some(path) = jq_path_to_segments(&self.jq_bar.query) {
-                self.path = path;
+        // Build a full path from jq segments by prepending the current file segment
+        let file_seg = self.path.first().cloned();
+        let make_full_path = |jq_segs: Vec<PathSegment>| -> Vec<PathSegment> {
+            let mut full = Vec::with_capacity(jq_segs.len() + 1);
+            if let Some(ref seg) = file_seg {
+                full.push(seg.clone());
+            }
+            full.extend(jq_segs);
+            full
+        };
+
+        // Cycling through completions — preview the path without committing
+        if resp.previewing {
+            if let Some(jq_segs) = jq_path_to_segments(&self.jq_bar.query) {
+                if resolve_path(root, &jq_segs).is_some() {
+                    self.path = make_full_path(jq_segs);
+                    self.selection = 0;
+                    self.jq_synced = true;
+                    self.jq_result = None;
+                    self.jq_error = None;
+                    self.scroll_to_selection = true;
+                }
+            }
+        }
+
+        // Final acceptance — Enter/Tab/click on a completion
+        if resp.accepted {
+            if let Some(jq_segs) = jq_path_to_segments(&self.jq_bar.query) {
+                self.path = make_full_path(jq_segs);
                 self.selection = 0;
                 self.jq_synced = true;
                 self.jq_result = None;
                 self.jq_error = None;
+                self.scroll_to_selection = true;
             }
-        }
-
-        if resp.run {
-            // First try as navigation path
-            if let Some(path) = jq_path_to_segments(&self.jq_bar.query) {
-                if resolve_path(root, &path).is_some() {
-                    self.path = path;
+        } else if resp.run {
+            // Manual Enter (no completion) — try as path, then as jq query
+            if let Some(jq_segs) = jq_path_to_segments(&self.jq_bar.query) {
+                if resolve_path(root, &jq_segs).is_some() {
+                    self.path = make_full_path(jq_segs);
                     self.selection = 0;
                     self.jq_synced = true;
                     self.jq_result = None;
@@ -312,7 +342,6 @@ impl BrowserView {
                     return;
                 }
             }
-            // Otherwise run as jq query
             let result = JqEngine::execute(&self.jq_bar.query, root);
             if let Some(err) = &result.error {
                 self.jq_error = Some(err.clone());
@@ -323,7 +352,6 @@ impl BrowserView {
             }
         }
 
-        // Show jq error inline
         if let Some(err) = &self.jq_error {
             ui.label(
                 RichText::new(err)
