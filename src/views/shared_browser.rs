@@ -382,15 +382,7 @@ fn pane_titles(path: &[String], selected_label: Option<&str>) -> (String, String
 }
 
 fn render_pane_title(ui: &mut Ui, title: &str) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(title)
-                .color(CatppuccinMocha::OVERLAY1)
-                .family(egui::FontFamily::Monospace)
-                .size(10.0),
-        );
-    });
-    ui.add_space(2.0);
+    crate::widgets::miller::pane_title(ui, title);
 }
 
 fn render_parent_column(

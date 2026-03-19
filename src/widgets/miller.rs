@@ -98,6 +98,22 @@ pub fn apply_selection(selection: &mut usize, action: MillerAction, count: usize
     false
 }
 
+/// Render a pane title above a miller column.
+pub fn pane_title(ui: &mut Ui, title: &str) {
+    if title.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .color(crate::theme::CatppuccinMocha::OVERLAY1)
+                .family(egui::FontFamily::Monospace)
+                .size(10.0),
+        );
+    });
+    ui.add_space(2.0);
+}
+
 /// Draw a vertical separator line (shared by both browser views).
 pub fn draw_separator(ui: &mut Ui, height: f32) {
     let sep_rect = ui.available_rect_before_wrap();

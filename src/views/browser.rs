@@ -229,6 +229,24 @@ impl BrowserView {
         let mut clicked_entry: Option<usize> = None;
         let mut dbl_clicked_entry: Option<usize> = None;
 
+        // Compute pane titles from path
+        let seg_label = |seg: &PathSegment| -> String {
+            match seg {
+                PathSegment::Key(k) => k.clone(),
+                PathSegment::Index(i) => format!("[{}]", i),
+            }
+        };
+        let selected_label = current_entries.get(self.selection).map(|e| e.label.as_str()).unwrap_or("");
+        let (left_title, mid_title, right_title) = match self.path.len() {
+            0 => (String::new(), "Files".to_string(), selected_label.to_string()),
+            1 => ("Files".to_string(), seg_label(&self.path[0]), selected_label.to_string()),
+            _ => {
+                let parent = seg_label(&self.path[self.path.len() - 2]);
+                let current_seg = seg_label(&self.path[self.path.len() - 1]);
+                (parent, current_seg, selected_label.to_string())
+            }
+        };
+
         let col_height = avail.height();
         ui.horizontal(|ui| {
             ui.set_height(col_height);
@@ -237,6 +255,7 @@ impl BrowserView {
             ui.vertical(|ui| {
                 ui.set_width(col_widths[0]);
                 ui.set_height(col_height);
+                crate::widgets::miller::pane_title(ui, &left_title);
                 self.render_parent_column(ui, &parent_entries, col_height);
             });
 
@@ -246,6 +265,7 @@ impl BrowserView {
             ui.vertical(|ui| {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
+                crate::widgets::miller::pane_title(ui, &mid_title);
                 let (c, d) = self.render_current_column(ui, &current_entries, current, col_height);
                 clicked_entry = c;
                 dbl_clicked_entry = d;
@@ -258,6 +278,7 @@ impl BrowserView {
                 let remaining = ui.available_width();
                 ui.set_width(remaining);
                 ui.set_height(col_height);
+                crate::widgets::miller::pane_title(ui, &right_title);
                 self.render_preview_column(ui, selected_child, &current_entries, col_height);
             });
         });
