@@ -43,6 +43,8 @@ pub struct BrowserView {
     current_list: crate::widgets::scrollable_list::ScrollableList,
     // Filter for the center column
     filter: crate::widgets::miller::MillerFilter,
+    // Persistent filter for the right preview column (Ctrl-/)
+    preview_filter: crate::widgets::miller::MillerFilter,
     // jq bar
     jq_bar: crate::widgets::jq_bar::JqBar,
     jq_synced: bool,
@@ -59,7 +61,8 @@ impl BrowserView {
 
             restore_key: None,
             current_list: crate::widgets::scrollable_list::ScrollableList::new(),
-            filter: crate::widgets::miller::MillerFilter::new(),
+            filter: crate::widgets::miller::MillerFilter::new("browser_center_filter"),
+            preview_filter: crate::widgets::miller::MillerFilter::new("browser_preview_filter"),
             jq_bar: crate::widgets::jq_bar::JqBar::new(),
             jq_synced: true,
             jq_result: None,
@@ -208,12 +211,18 @@ impl BrowserView {
 
         // --- Keyboard handling (only when no text input has focus) ---
         let jq_has_focus = crate::widgets::jq_bar::JqBar::has_focus(ui);
-        let filter_has_focus = self.filter.has_focus();
-        let skip_keys = jq_has_focus || filter_has_focus;
+        let filter_has_focus = self.filter.has_focus(ui);
+        let preview_filter_has_focus = self.preview_filter.has_focus(ui);
+        let skip_keys = jq_has_focus || filter_has_focus || preview_filter_has_focus;
 
-        // '?' activates filter
-        if !skip_keys {
-            self.filter.check_activate(ui);
+        // Ctrl-/ focuses preview filter
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Slash)) {
+            self.preview_filter.focus();
+        }
+
+        // '?' focuses center column filter
+        if !skip_keys && ui.input(|i| i.key_pressed(egui::Key::Questionmark)) {
+            self.filter.focus();
         }
 
         if !skip_keys {
@@ -225,7 +234,6 @@ impl BrowserView {
             if action == crate::widgets::MillerAction::Enter {
                 if let Some(entry) = current_entries.get(self.selection) {
                     if entry.is_container {
-                        self.filter.active = false;
                         self.filter.query.clear();
                         if self.path.is_empty() {
                             self.path.push(PathSegment::Key(entry.label.clone()));
@@ -239,7 +247,6 @@ impl BrowserView {
                 }
             }
             if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
-                self.filter.active = false;
                 self.filter.query.clear();
                 self.go_up();
             }
@@ -306,7 +313,7 @@ impl BrowserView {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &mid_title);
-                let filter_resp = self.filter.show(ui);
+                let filter_resp = self.filter.show(ui, "? to filter");
 
                 // Filter + snap selection
                 let fr = self.filter.apply(
@@ -332,7 +339,6 @@ impl BrowserView {
                     if filter_resp.accept {
                         if let Some(entry) = current_entries.get(self.selection) {
                             if entry.is_container {
-                                self.filter.active = false;
                                 self.filter.query.clear();
                                 if self.path.is_empty() {
                                     self.path.push(PathSegment::Key(entry.label.clone()));
@@ -357,12 +363,13 @@ impl BrowserView {
 
             Self::draw_separator(ui, col_height);
 
-            // Right: preview
+            // Right: preview (with persistent filter)
             ui.vertical(|ui| {
                 let remaining = ui.available_width();
                 ui.set_width(remaining);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &right_title);
+                self.preview_filter.show(ui, "ctrl-/ to filter");
                 self.render_preview_column(ui, selected_child, &current_entries, col_height);
             });
         });
@@ -764,17 +771,27 @@ impl BrowserView {
 
         match val {
             serde_json::Value::Object(map) => {
+                let keys: Vec<(&String, &serde_json::Value)> = map.iter()
+                    .filter(|(k, v)| {
+                        self.preview_filter.matches(k)
+                            || self.preview_filter.matches(&value_preview(v))
+                    })
+                    .collect();
                 ui.label(
                     RichText::new(format!(
-                        "{} Object — {} fields",
+                        "{} Object — {} fields{}",
                         egui_phosphor::regular::BRACKETS_CURLY,
-                        map.len()
+                        map.len(),
+                        if keys.len() != map.len() {
+                            format!(" ({} shown)", keys.len())
+                        } else {
+                            String::new()
+                        },
                     ))
                     .color(CatppuccinMocha::LAVENDER)
                     .small(),
                 );
                 ui.add_space(4.0);
-                let keys: Vec<(&String, &serde_json::Value)> = map.iter().collect();
                 egui::ScrollArea::vertical()
                     .id_salt("browser_preview")
                     .auto_shrink(false)
@@ -813,24 +830,32 @@ impl BrowserView {
                     });
             }
             serde_json::Value::Array(arr) => {
+                let items: Vec<(usize, &serde_json::Value)> = arr.iter()
+                    .enumerate()
+                    .filter(|(_, v)| self.preview_filter.matches(&value_preview(v)))
+                    .collect();
                 ui.label(
                     RichText::new(format!(
-                        "{} Array — {} items",
+                        "{} Array — {} items{}",
                         egui_phosphor::regular::BRACKETS_SQUARE,
-                        arr.len()
+                        arr.len(),
+                        if items.len() != arr.len() {
+                            format!(" ({} shown)", items.len())
+                        } else {
+                            String::new()
+                        },
                     ))
                     .color(CatppuccinMocha::YELLOW)
                     .small(),
                 );
                 ui.add_space(4.0);
-                let show_count = arr.len().min(200);
                 egui::ScrollArea::vertical()
                     .id_salt("browser_preview")
                     .auto_shrink(false)
                     .max_height(height - 24.0)
-                    .show_rows(ui, row_height, show_count, |ui, range| {
-                        for i in range {
-                            let v = &arr[i];
+                    .show_rows(ui, row_height, items.len(), |ui, range| {
+                        for idx in range {
+                            let (i, v) = items[idx];
                             let (icon, color) = type_icon_color(v);
                             let preview = value_preview(v);
                             ui.horizontal(|ui| {

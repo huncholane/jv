@@ -106,97 +106,102 @@ pub struct MillerFilterResponse {
     pub prev: bool,
     /// Enter pressed — navigate into selected entry
     pub accept: bool,
-    /// Escape pressed — filter closed
-    pub closed: bool,
 }
 
-/// Filter state for a miller column. Activated by `?`, fuzzy-filters entries.
+/// Always-visible filter bar for a miller column.
+/// Shows a text input with placeholder. Focus with shortcut key, Escape unfocuses.
 pub struct MillerFilter {
-    pub active: bool,
     pub query: String,
+    id: &'static str,
+    focus_next: bool,
 }
 
 impl MillerFilter {
-    pub fn new() -> Self {
+    pub fn new(id: &'static str) -> Self {
         Self {
-            active: false,
             query: String::new(),
+            id,
+            focus_next: false,
         }
     }
 
-    /// Check if `?` was pressed (only when no text input has focus).
-    /// Returns true if the filter was just activated.
-    pub fn check_activate(&mut self, ui: &Ui) -> bool {
-        if !self.active && ui.input(|i| i.key_pressed(egui::Key::Questionmark)) {
-            self.active = true;
-            self.query.clear();
-            true
-        } else {
-            false
-        }
+    /// Request focus on this filter's input next frame.
+    pub fn focus(&mut self) {
+        self.focus_next = true;
     }
 
-    /// Render the filter input bar.
-    pub fn show(&mut self, ui: &mut Ui) -> MillerFilterResponse {
+    /// Returns true if this filter's text input currently has focus.
+    pub fn has_focus(&self, ui: &Ui) -> bool {
+        let id = egui::Id::new(self.id);
+        ui.ctx().memory(|m| m.focused().map_or(false, |f| f == id))
+    }
+
+    /// Render the filter bar. Always visible.
+    /// `hint` is the placeholder text (e.g. "? to filter" or "ctrl-/ to filter").
+    pub fn show(&mut self, ui: &mut Ui, hint: &str) -> MillerFilterResponse {
         let mut resp = MillerFilterResponse {
             next: false,
             prev: false,
             accept: false,
-            closed: false,
         };
-
-        if !self.active {
-            return resp;
-        }
 
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
-                    .color(crate::theme::CatppuccinMocha::MAUVE)
+                    .color(if self.query.is_empty() {
+                        crate::theme::CatppuccinMocha::SURFACE2
+                    } else {
+                        crate::theme::CatppuccinMocha::MAUVE
+                    })
                     .size(12.0),
             );
+
+            let id = egui::Id::new(self.id);
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
-                    .id(egui::Id::new("miller_filter_input"))
+                    .id(id)
                     .font(egui::FontId::monospace(12.0))
                     .desired_width(ui.available_width() - 10.0)
-                    .text_color(crate::theme::CatppuccinMocha::GREEN),
+                    .text_color(crate::theme::CatppuccinMocha::GREEN)
+                    .hint_text(
+                        egui::RichText::new(hint)
+                            .color(crate::theme::CatppuccinMocha::SURFACE2)
+                            .family(egui::FontFamily::Monospace)
+                    ),
             );
-            r.request_focus();
 
-            // Ctrl-N / ArrowDown: next match
-            resp.next = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
-                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
-            // Ctrl-P / ArrowUp: prev match
-            resp.prev = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
-                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
-            // Enter: navigate into selection
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                resp.accept = true;
+            if self.focus_next {
+                r.request_focus();
+                self.focus_next = false;
             }
-            // Escape: close
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                resp.closed = true;
+
+            let has_focus = r.has_focus();
+
+            if has_focus {
+                // Escape: unfocus (don't clear)
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    r.surrender_focus();
+                }
+                // Ctrl-N / ArrowDown
+                resp.next = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
+                // Ctrl-P / ArrowUp
+                resp.prev = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
+                // Enter
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    resp.accept = true;
+                }
             }
         });
         ui.add_space(2.0);
 
-        if resp.closed {
-            self.active = false;
-            self.query.clear();
-        }
-
         resp
     }
 
-    /// Returns true if the filter is active (caller should skip miller keys).
-    pub fn has_focus(&self) -> bool {
-        self.active
-    }
-
-    /// Fuzzy match a label against the query. Returns true if it matches.
+    /// Fuzzy match a label against the query. Returns true if it matches (or query is empty).
     pub fn matches(&self, label: &str) -> bool {
-        if !self.active || self.query.is_empty() {
+        if self.query.is_empty() {
             return true;
         }
         fuzzy_matches(&self.query, label)

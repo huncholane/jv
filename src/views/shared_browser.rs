@@ -53,7 +53,7 @@ impl SharedBrowserView {
             entries_cache_key: vec!["__invalid__".to_string()], // force initial rebuild
             cached_current_entries: Vec::new(),
             cached_parent_entries: None,
-            filter: crate::widgets::miller::MillerFilter::new(),
+            filter: crate::widgets::miller::MillerFilter::new("groups_center_filter"),
             values_cache_key: (Vec::new(), String::new()),
             values_rows: Vec::new(),
         }
@@ -124,9 +124,9 @@ impl SharedBrowserView {
         }
 
         // Keyboard navigation (skip when filter has focus)
-        let skip_keys = self.filter.has_focus();
-        if !skip_keys {
-            self.filter.check_activate(ui);
+        let skip_keys = self.filter.has_focus(ui);
+        if !skip_keys && ui.input(|i| i.key_pressed(egui::Key::Questionmark)) {
+            self.filter.focus();
         }
 
         let action = crate::widgets::read_miller_keys(ui, skip_keys);
@@ -136,7 +136,6 @@ impl SharedBrowserView {
         if action == crate::widgets::MillerAction::Enter {
             if let Some(entry) = self.cached_current_entries.get(self.selection) {
                 if entry.is_container {
-                    self.filter.active = false;
                     self.filter.query.clear();
                     self.path.push(entry.label.clone());
                     self.selection = 0;
@@ -151,7 +150,6 @@ impl SharedBrowserView {
             }
         }
         if action == crate::widgets::MillerAction::Back && !self.path.is_empty() {
-            self.filter.active = false;
             self.filter.query.clear();
             let popped = self.path.pop().unwrap();
             self.restore_key = Some(popped);
@@ -225,7 +223,7 @@ impl SharedBrowserView {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
                 render_pane_title(ui, &mid_title);
-                let filter_resp = self.filter.show(ui);
+                let filter_resp = self.filter.show(ui, "? to filter");
 
                 // Filter + snap selection
                 let fr = self.filter.apply(
@@ -319,7 +317,6 @@ impl SharedBrowserView {
         if filter_accepted {
             if let Some(entry) = self.cached_current_entries.get(self.selection) {
                 if entry.is_container {
-                    self.filter.active = false;
                     self.filter.query.clear();
                     self.path.push(entry.label.clone());
                     self.selection = 0;
