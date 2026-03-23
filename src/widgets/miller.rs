@@ -176,19 +176,22 @@ impl MillerFilter {
             }
 
             let has_focus = r.has_focus();
+            let lost_focus = r.lost_focus();
 
-            if has_focus {
-                // Escape: unfocus (don't clear)
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    r.surrender_focus();
+            if has_focus || lost_focus {
+                if has_focus {
+                    // Escape: unfocus (don't clear)
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        r.surrender_focus();
+                    }
+                    // Ctrl-N / ArrowDown
+                    resp.next = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                        || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
+                    // Ctrl-P / ArrowUp
+                    resp.prev = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
+                        || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
                 }
-                // Ctrl-N / ArrowDown
-                resp.next = ui.input(|i| i.key_pressed(egui::Key::ArrowDown))
-                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N));
-                // Ctrl-P / ArrowUp
-                resp.prev = ui.input(|i| i.key_pressed(egui::Key::ArrowUp))
-                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::P));
-                // Enter
+                // Enter (check both has_focus and lost_focus since TextEdit surrenders on Enter)
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     resp.accept = true;
                 }
