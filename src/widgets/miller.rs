@@ -203,11 +203,16 @@ impl MillerFilter {
     }
 
     /// Fuzzy match a label against the query. Returns true if it matches (or query is empty).
+    /// Supports `|` to OR multiple terms (e.g. "start|report" matches either).
     pub fn matches(&self, label: &str) -> bool {
         if self.query.is_empty() {
             return true;
         }
-        fuzzy_matches(&self.query, label)
+        self.query.split('|')
+            .any(|term| {
+                let term = term.trim();
+                !term.is_empty() && fuzzy_matches(term, label)
+            })
     }
 
     /// Filter a list of labels and manage selection mapping.
