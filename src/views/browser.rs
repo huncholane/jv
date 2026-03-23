@@ -54,6 +54,7 @@ pub struct BrowserView {
     // Focus list: full paths to pinned entries (e.g. ["activity_Aug.responseData.status"])
     focused: Vec<Vec<PathSegment>>,
     focus_mode: bool,
+    focus_dirty: bool,
 }
 
 impl BrowserView {
@@ -73,6 +74,7 @@ impl BrowserView {
             cache_key: 0,
             focused: Vec::new(),
             focus_mode: false,
+            focus_dirty: false,
         }
     }
 
@@ -110,6 +112,37 @@ impl BrowserView {
         }
         // selection changed
         self.sync_jq_from_path();
+    }
+
+    /// Load focus list from session data.
+    pub fn load_focus_list(&mut self, paths: &[Vec<String>]) {
+        self.focused = paths.iter().map(|segs| {
+            segs.iter().map(|s| {
+                if let Some(stripped) = s.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                    if let Ok(i) = stripped.parse::<usize>() {
+                        return PathSegment::Index(i);
+                    }
+                }
+                PathSegment::Key(s.clone())
+            }).collect()
+        }).collect();
+    }
+
+    /// Save focus list as session-serializable data.
+    pub fn save_focus_list(&self) -> Vec<Vec<String>> {
+        self.focused.iter().map(|path| {
+            path.iter().map(|seg| match seg {
+                PathSegment::Key(k) => k.clone(),
+                PathSegment::Index(i) => format!("[{}]", i),
+            }).collect()
+        }).collect()
+    }
+
+    /// Returns true if the focus list was modified since last check, and clears the flag.
+    pub fn take_focus_dirty(&mut self) -> bool {
+        let dirty = self.focus_dirty;
+        self.focus_dirty = false;
+        dirty
     }
 
     pub fn invalidate(&mut self) {
@@ -322,6 +355,7 @@ impl BrowserView {
                     } else {
                         self.focused.push(full_path);
                     }
+                    self.focus_dirty = true;
                 }
             }
             // 'F' (shift-f) toggles focus mode

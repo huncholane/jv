@@ -259,6 +259,7 @@ impl JvApp {
         };
         if let Some(loaded) = &app.current_session {
             app.applied_threshold = loaded.session.jaccard_threshold;
+            app.browser_view.load_focus_list(&loaded.session.focus_list);
         }
         tracing::info!("UI loaded");
         app
@@ -351,6 +352,7 @@ impl JvApp {
                             if ui.selectable_label(name == &current_name, name).clicked() {
                                 let session = self.session_manager.sessions[i].clone();
                                 self.session_manager.save_last_session_id(&session.id);
+                                self.browser_view.load_focus_list(&session.focus_list);
                                 self.current_session = Some(LoadedSession::new(session));
                                 self.selected_file_index = 0;
                                 self.rebuild_schema();
@@ -889,27 +891,38 @@ impl JvApp {
                     return;
                 }
 
-                let loaded = self.current_session.as_ref().unwrap();
-                let file_idx = self.selected_file_index.min(loaded.parsed_files.len().saturating_sub(1));
-                let file_count = loaded.parsed_files.len();
+                {
+                    let loaded = self.current_session.as_ref().unwrap();
+                    let file_idx = self.selected_file_index.min(loaded.parsed_files.len().saturating_sub(1));
+                    let file_count = loaded.parsed_files.len();
 
-                // Invalidate only when files are added/removed (not on selection change)
-                if file_count != self.last_file_count {
-                    self.browser_view.invalidate();
-                    self.code_view.invalidate();
-                    self.schema_diagram_view.invalidate();
-                    self.last_file_count = file_count;
+                    if file_count != self.last_file_count {
+                        self.browser_view.invalidate();
+                        self.code_view.invalidate();
+                        self.schema_diagram_view.invalidate();
+                        self.last_file_count = file_count;
+                    }
+                    self.last_file_index = file_idx;
+
+                    self.browser_view.show(ui, &loaded.parsed_files);
                 }
-                self.last_file_index = file_idx;
 
-                self.browser_view.show(ui, &loaded.parsed_files);
+                // Save focus list if it changed
+                if self.browser_view.take_focus_dirty() {
+                    if let Some(loaded) = &mut self.current_session {
+                        loaded.session.focus_list = self.browser_view.save_focus_list();
+                        self.session_manager.update_session(&loaded.session);
+                    }
+                }
 
                 // Sync sidebar selection from browser's current file
-                if let Some(file_key) = self.browser_view.current_file_key(&loaded.parsed_files) {
-                    if let Some(idx) = loaded.parsed_files.iter().position(|(n, _)| {
-                        n.strip_suffix(".json").unwrap_or(n) == file_key
-                    }) {
-                        self.selected_file_index = idx;
+                if let Some(loaded) = &self.current_session {
+                    if let Some(file_key) = self.browser_view.current_file_key(&loaded.parsed_files) {
+                        if let Some(idx) = loaded.parsed_files.iter().position(|(n, _)| {
+                            n.strip_suffix(".json").unwrap_or(n) == file_key
+                        }) {
+                            self.selected_file_index = idx;
+                        }
                     }
                 }
             }

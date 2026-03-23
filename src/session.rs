@@ -27,6 +27,8 @@ pub struct Session {
     pub enum_conversions: Vec<EnumConversion>,
     #[serde(default)]
     pub hidden_fields: Vec<String>, // "StructName.field_name" format
+    #[serde(default)]
+    pub focus_list: Vec<Vec<String>>, // saved focus paths for jv browser
 }
 
 fn default_jaccard() -> f32 {
@@ -141,6 +143,7 @@ impl Session {
             jaccard_threshold: default_jaccard(),
             enum_conversions: Vec::new(),
             hidden_fields: Vec::new(),
+            focus_list: Vec::new(),
         }
     }
 }
