@@ -53,7 +53,7 @@ pub struct BrowserView {
     cache_key: u64,
     // Focus list: full paths to pinned entries (e.g. ["activity_Aug.responseData.status"])
     focused: Vec<Vec<PathSegment>>,
-    focus_mode: bool,
+    pub focus_mode: bool,
     focus_dirty: bool,
 }
 
@@ -177,10 +177,7 @@ impl BrowserView {
         let (current_entries, parent_entries) = if in_focus_root {
             // Focus mode root: show pinned items as the root list
             let entries: Vec<Entry> = self.focused.iter().map(|fp| {
-                let label = fp.iter().map(|seg| match seg {
-                    PathSegment::Key(k) => k.clone(),
-                    PathSegment::Index(i) => format!("[{}]", i),
-                }).collect::<Vec<_>>().join(".");
+                let label = focus_path_label(fp);
                 let value = resolve_from_files(files, fp);
                 let (icon, color) = value.map(type_icon_color).unwrap_or(("{}", CatppuccinMocha::OVERLAY0));
                 let preview = value.map(value_preview).unwrap_or_default();
@@ -238,19 +235,9 @@ impl BrowserView {
         }
 
         let selected_child = if in_focus_root {
-            // Focus root — find the focused path matching the selected entry's label
-            current_entries.get(self.selection)
-                .and_then(|entry| {
-                    self.focused.iter()
-                        .find(|fp| {
-                            let label = fp.iter().map(|seg| match seg {
-                                PathSegment::Key(k) => k.clone(),
-                                PathSegment::Index(i) => format!("[{}]", i),
-                            }).collect::<Vec<_>>().join(".");
-                            label == entry.label
-                        })
-                        .and_then(|fp| resolve_from_files(files, fp))
-                })
+            // Focus root — entry index maps directly to self.focused index
+            self.focused.get(self.selection)
+                .and_then(|fp| resolve_from_files(files, fp))
         } else if let Some(cv) = current_value {
             // Inside a file — look up child by key/index
             current_entries.get(self.selection)
@@ -317,15 +304,14 @@ impl BrowserView {
                     if entry.is_container {
                         self.filter.query.clear();
                         if in_focus_root {
-                            // Enter a focused item: set path to its full path
-                            if let Some(fp) = self.focused.get(self.selection) {
-                                self.path = fp.clone();
+                            if let Some(fp) = self.focused.get(self.selection).cloned() {
+                                self.path = fp;
                                 self.selection = 0;
                                 self.jq_synced = true;
                                 self.sync_jq_from_path();
                             }
                         } else if self.path.is_empty() {
-                            self.path.push(PathSegment::Key(entry.label.clone()));
+                            self.path.push(label_to_segment(&entry.label));
                             self.selection = 0;
                             self.jq_synced = true;
                             self.sync_jq_from_path();
@@ -358,11 +344,22 @@ impl BrowserView {
             // 'f' toggles focus on selected entry (stores full path)
             if ui.input(|i| i.key_pressed(egui::Key::F) && !i.modifiers.shift) {
                 if let Some(entry) = current_entries.get(self.selection) {
-                    let mut full_path = self.path.clone();
-                    full_path.push(PathSegment::Key(entry.label.clone()));
-                    if let Some(pos) = self.focused.iter().position(|p| *p == full_path) {
-                        self.focused.remove(pos);
+                    // Find by label match (works at focus root) or by path (works at any depth)
+                    let pos = if in_focus_root {
+                        // At focus root, selection index = focused index
+                        Some(self.selection)
                     } else {
+                        // At depth, match by full path
+                        let mut check = self.path.clone();
+                        check.push(label_to_segment(&entry.label));
+                        self.focused.iter().position(|fp| *fp == check)
+                    };
+                    if let Some(pos) = pos {
+                        self.focused.remove(pos);
+                    } else if !in_focus_root {
+                        // Only add when NOT at focus root (focus root entries are already focused)
+                        let mut full_path = self.path.clone();
+                        full_path.push(label_to_segment(&entry.label));
                         self.focused.push(full_path);
                     }
                     self.focus_dirty = true;
@@ -466,14 +463,14 @@ impl BrowserView {
                             if entry.is_container {
                                 self.filter.query.clear();
                                 if in_focus_root {
-                                    if let Some(fp) = self.focused.get(self.selection) {
-                                        self.path = fp.clone();
+                                    if let Some(fp) = self.focused.get(self.selection).cloned() {
+                                        self.path = fp;
                                         self.selection = 0;
                                         self.jq_synced = true;
                                         self.sync_jq_from_path();
                                     }
                                 } else if self.path.is_empty() {
-                                    self.path.push(PathSegment::Key(entry.label.clone()));
+                                    self.path.push(label_to_segment(&entry.label));
                                     self.selection = 0;
                                     self.jq_synced = true;
                                     self.sync_jq_from_path();
@@ -517,14 +514,14 @@ impl BrowserView {
             if let Some(entry) = current_entries.get(idx) {
                 if entry.is_container {
                     if in_focus_root {
-                        if let Some(fp) = self.focused.get(idx) {
-                            self.path = fp.clone();
+                        if let Some(fp) = self.focused.get(idx).cloned() {
+                            self.path = fp;
                             self.selection = 0;
                             self.jq_synced = true;
                             self.sync_jq_from_path();
                         }
                     } else if self.path.is_empty() {
-                        self.path.push(PathSegment::Key(entry.label.clone()));
+                        self.path.push(label_to_segment(&entry.label));
                         self.selection = 0;
                         self.jq_synced = true;
                         self.sync_jq_from_path();
@@ -718,6 +715,7 @@ impl BrowserView {
         let mut dbl_clicked: Option<usize> = None;
         let current_path = self.path.clone();
         let focused = self.focused.clone();
+        let is_focus_root = self.focus_mode && self.path.is_empty();
 
         // Map original selection index → filtered list position
         let filtered_pos = entries.iter().position(|(orig, _)| *orig == self.selection)
@@ -789,9 +787,14 @@ impl BrowserView {
                             ui.ctx().data_mut(|d| d.insert_temp(copy_btn_id, icon_rect));
 
                             // Focus indicator
-                            let mut entry_path = current_path.clone();
-                            entry_path.push(PathSegment::Key(entry.label.clone()));
-                            if focused.iter().any(|p| *p == entry_path) {
+                            let is_focused = if is_focus_root {
+                                true // all entries at focus root are focused
+                            } else {
+                                let mut entry_path = current_path.clone();
+                                entry_path.push(label_to_segment(&entry.label));
+                                focused.iter().any(|p| *p == entry_path)
+                            };
+                            if is_focused {
                                 ui.label(
                                     RichText::new(egui_phosphor::regular::STAR)
                                         .color(CatppuccinMocha::YELLOW)
@@ -1152,7 +1155,7 @@ impl BrowserView {
             }
             match current {
                 serde_json::Value::Object(_) => {
-                    self.path.push(PathSegment::Key(entry.label.clone()));
+                    self.path.push(label_to_segment(&entry.label));
                 }
                 serde_json::Value::Array(_) => {
                     self.path.push(PathSegment::Index(self.selection));
@@ -1200,6 +1203,57 @@ impl BrowserView {
 
 /// Resolve a path starting from the file list. path[0] is a file display name,
 /// remaining segments navigate into that file's JSON value. No cloning.
+/// Full dot-joined label for a focused path.
+fn focus_path_full(fp: &[PathSegment]) -> String {
+    fp.iter().map(|seg| match seg {
+        PathSegment::Key(k) => k.clone(),
+        PathSegment::Index(i) => format!("[{}]", i),
+    }).collect::<Vec<_>>().join(".")
+}
+
+/// Short label for a focused path: "filename...lastKey[idx]"
+fn focus_path_label(fp: &[PathSegment]) -> String {
+    if fp.is_empty() {
+        return String::new();
+    }
+    if fp.len() <= 2 {
+        return focus_path_full(fp);
+    }
+
+    let first = match &fp[0] {
+        PathSegment::Key(k) => k.clone(),
+        PathSegment::Index(i) => format!("[{}]", i),
+    };
+
+    // Build the tail: last key + any trailing indices
+    let mut tail_parts = Vec::new();
+    for seg in fp.iter().rev() {
+        match seg {
+            PathSegment::Index(i) => tail_parts.push(format!("[{}]", i)),
+            PathSegment::Key(k) => {
+                tail_parts.push(k.clone());
+                break;
+            }
+        }
+    }
+    tail_parts.reverse();
+    let tail = tail_parts.join(".");
+
+    format!("{}...{}", first, tail)
+}
+
+/// Convert an entry label to the correct PathSegment.
+/// Array items have labels like "[0]", "[1]" → Index(n).
+/// Everything else → Key(label).
+fn label_to_segment(label: &str) -> PathSegment {
+    if let Some(inner) = label.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Ok(i) = inner.parse::<usize>() {
+            return PathSegment::Index(i);
+        }
+    }
+    PathSegment::Key(label.to_string())
+}
+
 fn resolve_from_files<'a>(
     files: &'a [(String, serde_json::Value)],
     path: &[PathSegment],

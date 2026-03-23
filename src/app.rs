@@ -715,8 +715,13 @@ impl JvApp {
         // Mode switcher
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
+            let jv_icon = if self.browser_view.focus_mode {
+                regular::STAR
+            } else {
+                regular::BROWSERS
+            };
             for (mode, label, icon) in [
-                (AppMode::Jv, "jv", regular::BROWSERS),
+                (AppMode::Jv, "jv", jv_icon),
                 (AppMode::Groups, "Groups", regular::TREE_STRUCTURE),
                 (AppMode::Schema, "Schema", regular::GRAPH),
                 (AppMode::Code, "Code", regular::CODE),
