@@ -355,9 +355,16 @@ impl BrowserView {
                 } else if !self.path.is_empty() {
                     self.filter.query.clear();
                     if self.focus_mode {
-                        // In focus mode, H goes back to focus root
-                        self.path.clear();
-                        self.selection = 0;
+                        // Check if current path IS a focused item (one more pop = focus root)
+                        let focused_idx = self.focused.iter().position(|fp| *fp == self.path);
+                        if let Some(idx) = focused_idx {
+                            // Back from a focused item → return to focus root, select that item
+                            self.path.clear();
+                            self.selection = idx;
+                        } else {
+                            // Deeper than a focused item → normal go_up
+                            self.go_up();
+                        }
                     } else {
                         self.go_up();
                     }
