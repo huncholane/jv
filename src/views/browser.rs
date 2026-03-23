@@ -417,7 +417,14 @@ impl BrowserView {
                 PathSegment::Index(i) => format!("[{}]", i),
             }
         };
-        let selected_label = current_entries.get(self.selection).map(|e| e.label.as_str()).unwrap_or("");
+        let selected_label = if in_focus_root {
+            // Use full path for the right pane title in focus mode
+            self.focused.get(self.selection)
+                .map(|fp| focus_path_full(fp))
+                .unwrap_or_default()
+        } else {
+            current_entries.get(self.selection).map(|e| e.label.clone()).unwrap_or_default()
+        };
         let focus_suffix = if self.focus_mode && !self.focused.is_empty() {
             format!(" ({} focused)", self.focused.len())
         } else {
@@ -1229,13 +1236,13 @@ fn focus_path_full(fp: &[PathSegment]) -> String {
     }).collect::<Vec<_>>().join(".")
 }
 
-/// Short label for a focused path: "filename...lastKey[idx]"
+const FOCUS_LABEL_MAX: usize = 40;
+
+/// Short label for a focused path: "first_word...last_chars" if over max, else full.
 fn focus_path_label(fp: &[PathSegment]) -> String {
-    if fp.is_empty() {
-        return String::new();
-    }
-    if fp.len() <= 2 {
-        return focus_path_full(fp);
+    let full = focus_path_full(fp);
+    if full.len() <= FOCUS_LABEL_MAX {
+        return full;
     }
 
     let first = match &fp[0] {
@@ -1243,21 +1250,14 @@ fn focus_path_label(fp: &[PathSegment]) -> String {
         PathSegment::Index(i) => format!("[{}]", i),
     };
 
-    // Build the tail: last key + any trailing indices
-    let mut tail_parts = Vec::new();
-    for seg in fp.iter().rev() {
-        match seg {
-            PathSegment::Index(i) => tail_parts.push(format!("[{}]", i)),
-            PathSegment::Key(k) => {
-                tail_parts.push(k.clone());
-                break;
-            }
-        }
+    // "first...tail" where tail fills remaining chars
+    let ellipsis = "...";
+    let budget = FOCUS_LABEL_MAX.saturating_sub(first.len() + ellipsis.len());
+    if budget == 0 {
+        return format!("{}{}", first, ellipsis);
     }
-    tail_parts.reverse();
-    let tail = tail_parts.join(".");
-
-    format!("{}...{}", first, tail)
+    let tail = &full[full.len().saturating_sub(budget)..];
+    format!("{}{}{}", first, ellipsis, tail)
 }
 
 /// Convert an entry label to the correct PathSegment.
