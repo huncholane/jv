@@ -58,6 +58,7 @@ pub struct JvApp {
     new_session_name: String,
     show_new_session_dialog: bool,
     sidebar_width: f32,
+    sidebar_visible: bool,
     theme_applied: bool,
 
     // File drop handling
@@ -250,6 +251,7 @@ impl JvApp {
             new_session_name: String::new(),
             show_new_session_dialog: false,
             sidebar_width: 240.0,
+            sidebar_visible: true,
             theme_applied: false,
             dropped_files: Vec::new(),
             frame_times: std::collections::VecDeque::with_capacity(60),
@@ -1189,16 +1191,23 @@ impl eframe::App for JvApp {
                 });
         }
 
+        // Ctrl-B: toggle sidebar
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::B)) {
+            self.sidebar_visible = !self.sidebar_visible;
+        }
+
         // Sidebar
-        egui::SidePanel::left("sidebar")
-            .default_width(self.sidebar_width)
-            .min_width(180.0)
-            .max_width(400.0)
-            .resizable(true)
-            .frame(egui::Frame::new().fill(CatppuccinMocha::MANTLE).inner_margin(12.0))
-            .show(ctx, |ui| {
-                self.show_sidebar(ui);
-            });
+        if self.sidebar_visible {
+            egui::SidePanel::left("sidebar")
+                .default_width(self.sidebar_width)
+                .min_width(180.0)
+                .max_width(400.0)
+                .resizable(true)
+                .frame(egui::Frame::new().fill(CatppuccinMocha::MANTLE).inner_margin(12.0))
+                .show(ctx, |ui| {
+                    self.show_sidebar(ui);
+                });
+        }
 
         // Main content
         egui::CentralPanel::default()

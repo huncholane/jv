@@ -192,10 +192,20 @@ impl BrowserView {
             }
         }
 
+        // Estimate max label chars from available width
+        // ~7px per monospace char at 12pt, use 60% of the current column for the label
+        let avail_w = ui.available_width() - 12.0;
+        let current_col_w = if self.path.is_empty() {
+            avail_w * 0.60 // root: left+center merged
+        } else {
+            avail_w * 0.38 // normal center column
+        };
+        let max_label_chars = ((current_col_w * 0.65) / 7.0).max(20.0) as usize;
+
         let (current_entries, parent_entries) = if in_focus_root {
             // Focus mode root: show pinned items as the root list
             let entries: Vec<Entry> = self.focused.iter().map(|fp| {
-                let label = focus_path_label(fp);
+                let label = focus_path_label(fp, max_label_chars);
                 let value = resolve_from_files(files, fp);
                 let (icon, color) = value.map(type_icon_color).unwrap_or(("{}", CatppuccinMocha::OVERLAY0));
                 let preview = value.map(value_preview).unwrap_or_default();
@@ -442,22 +452,30 @@ impl BrowserView {
         };
 
         let col_height = avail.height();
+        let at_root = self.path.is_empty();
         ui.horizontal(|ui| {
             ui.set_height(col_height);
 
-            // Left: parent
-            ui.vertical(|ui| {
-                ui.set_width(col_widths[0]);
-                ui.set_height(col_height);
-                crate::widgets::miller::pane_title(ui, &left_title);
-                self.render_parent_column(ui, &parent_entries, col_height);
-            });
+            if !at_root {
+                // Left: parent
+                ui.vertical(|ui| {
+                    ui.set_width(col_widths[0]);
+                    ui.set_height(col_height);
+                    crate::widgets::miller::pane_title(ui, &left_title);
+                    self.render_parent_column(ui, &parent_entries, col_height);
+                });
 
-            Self::draw_separator(ui, col_height);
+                Self::draw_separator(ui, col_height);
+            }
 
-            // Middle: current (with optional filter)
+            // Middle: current (with optional filter) — takes left+center width at root
+            let current_width = if at_root {
+                col_widths[0] + col_widths[1] + 5.0
+            } else {
+                col_widths[1]
+            };
             ui.vertical(|ui| {
-                ui.set_width(col_widths[1]);
+                ui.set_width(current_width);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &mid_title);
                 let filter_resp = self.filter.show(ui, "? to filter");
@@ -1236,12 +1254,10 @@ fn focus_path_full(fp: &[PathSegment]) -> String {
     }).collect::<Vec<_>>().join(".")
 }
 
-const FOCUS_LABEL_MAX: usize = 40;
-
 /// Short label for a focused path: "first_word...last_chars" if over max, else full.
-fn focus_path_label(fp: &[PathSegment]) -> String {
+fn focus_path_label(fp: &[PathSegment], max_chars: usize) -> String {
     let full = focus_path_full(fp);
-    if full.len() <= FOCUS_LABEL_MAX {
+    if full.len() <= max_chars {
         return full;
     }
 
@@ -1250,9 +1266,8 @@ fn focus_path_label(fp: &[PathSegment]) -> String {
         PathSegment::Index(i) => format!("[{}]", i),
     };
 
-    // "first...tail" where tail fills remaining chars
     let ellipsis = "...";
-    let budget = FOCUS_LABEL_MAX.saturating_sub(first.len() + ellipsis.len());
+    let budget = max_chars.saturating_sub(first.len() + ellipsis.len());
     if budget == 0 {
         return format!("{}{}", first, ellipsis);
     }
