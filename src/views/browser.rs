@@ -174,6 +174,24 @@ impl BrowserView {
         // Build entries for current + parent level
         let in_focus_root = self.focus_mode && self.path.is_empty() && !self.focused.is_empty();
 
+        // Handle focus reorder BEFORE building entries so they're in sync
+        if in_focus_root {
+            let move_up = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::K))
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowUp));
+            let move_down = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::J))
+                || ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowDown));
+            if move_up && self.selection > 0 {
+                self.focused.swap(self.selection, self.selection - 1);
+                self.selection -= 1;
+                self.focus_dirty = true;
+            }
+            if move_down && self.selection + 1 < self.focused.len() {
+                self.focused.swap(self.selection, self.selection + 1);
+                self.selection += 1;
+                self.focus_dirty = true;
+            }
+        }
+
         let (current_entries, parent_entries) = if in_focus_root {
             // Focus mode root: show pinned items as the root list
             let entries: Vec<Entry> = self.focused.iter().map(|fp| {
