@@ -238,9 +238,19 @@ impl BrowserView {
         }
 
         let selected_child = if in_focus_root {
-            // Focus root — resolve via the focused entry's full path
-            self.focused.get(self.selection)
-                .and_then(|fp| resolve_from_files(files, fp))
+            // Focus root — find the focused path matching the selected entry's label
+            current_entries.get(self.selection)
+                .and_then(|entry| {
+                    self.focused.iter()
+                        .find(|fp| {
+                            let label = fp.iter().map(|seg| match seg {
+                                PathSegment::Key(k) => k.clone(),
+                                PathSegment::Index(i) => format!("[{}]", i),
+                            }).collect::<Vec<_>>().join(".");
+                            label == entry.label
+                        })
+                        .and_then(|fp| resolve_from_files(files, fp))
+                })
         } else if let Some(cv) = current_value {
             // Inside a file — look up child by key/index
             current_entries.get(self.selection)
