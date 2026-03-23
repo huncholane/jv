@@ -110,10 +110,52 @@ pub struct MillerFilterResponse {
 
 /// Always-visible filter bar for a miller column.
 /// Shows a text input with placeholder. Focus with shortcut key, Escape unfocuses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterMode {
+    Fuzzy,    // chars in order anywhere
+    Contains, // case-insensitive substring
+    Exact,    // case-insensitive full match
+}
+
+impl FilterMode {
+    fn next(self) -> Self {
+        match self {
+            FilterMode::Fuzzy => FilterMode::Contains,
+            FilterMode::Contains => FilterMode::Exact,
+            FilterMode::Exact => FilterMode::Fuzzy,
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            FilterMode::Fuzzy => egui_phosphor::regular::WAVES,
+            FilterMode::Contains => egui_phosphor::regular::TEXTBOX,
+            FilterMode::Exact => egui_phosphor::regular::EQUALS,
+        }
+    }
+
+    fn color(self) -> egui::Color32 {
+        match self {
+            FilterMode::Fuzzy => crate::theme::CatppuccinMocha::PEACH,
+            FilterMode::Contains => crate::theme::CatppuccinMocha::BLUE,
+            FilterMode::Exact => crate::theme::CatppuccinMocha::GREEN,
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            FilterMode::Fuzzy => "Fuzzy (ctrl-f to cycle)",
+            FilterMode::Contains => "Contains (ctrl-f to cycle)",
+            FilterMode::Exact => "Exact (ctrl-f to cycle)",
+        }
+    }
+}
+
 pub struct MillerFilter {
     pub query: String,
     id: &'static str,
     focus_next: bool,
+    pub mode: FilterMode,
 }
 
 impl MillerFilter {
@@ -122,6 +164,7 @@ impl MillerFilter {
             query: String::new(),
             id,
             focus_next: false,
+            mode: FilterMode::Fuzzy,
         }
     }
 
@@ -156,6 +199,17 @@ impl MillerFilter {
                     .size(12.0),
             );
 
+            // Filter mode toggle
+            if ui.add(
+                egui::Button::new(
+                    egui::RichText::new(self.mode.icon())
+                        .color(self.mode.color())
+                        .size(11.0)
+                ).frame(false)
+            ).on_hover_text(self.mode.tooltip()).clicked() {
+                self.mode = self.mode.next();
+            }
+
             let id = egui::Id::new(self.id);
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
@@ -180,6 +234,10 @@ impl MillerFilter {
 
             if has_focus || lost_focus {
                 if has_focus {
+                    // Ctrl-F: cycle filter mode
+                    if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+                        self.mode = self.mode.next();
+                    }
                     // Escape: unfocus (don't clear)
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         r.surrender_focus();
@@ -202,7 +260,7 @@ impl MillerFilter {
         resp
     }
 
-    /// Fuzzy match a label against the query. Returns true if it matches (or query is empty).
+    /// Match a label against the query using the current filter mode.
     /// Supports `|` to OR multiple terms (e.g. "start|report" matches either).
     pub fn matches(&self, label: &str) -> bool {
         if self.query.is_empty() {
@@ -211,7 +269,12 @@ impl MillerFilter {
         self.query.split('|')
             .any(|term| {
                 let term = term.trim();
-                !term.is_empty() && fuzzy_matches(term, label)
+                if term.is_empty() { return false; }
+                match self.mode {
+                    FilterMode::Fuzzy => fuzzy_matches(term, label),
+                    FilterMode::Contains => label.to_lowercase().contains(&term.to_lowercase()),
+                    FilterMode::Exact => label.to_lowercase() == term.to_lowercase(),
+                }
             })
     }
 
