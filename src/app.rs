@@ -210,7 +210,14 @@ impl JvApp {
             let session = manager.create_session("Default Session");
             Some(LoadedSession::new(session))
         } else {
-            let session = manager.sessions[0].clone();
+            // Restore last active session, or fall back to first
+            let session = if let Some(last_id) = &manager.last_session_id {
+                manager.sessions.iter().find(|s| s.id == *last_id)
+                    .cloned()
+                    .unwrap_or_else(|| manager.sessions[0].clone())
+            } else {
+                manager.sessions[0].clone()
+            };
             Some(LoadedSession::new(session))
         };
 
@@ -343,6 +350,7 @@ impl JvApp {
                         for (i, name) in session_names.iter().enumerate() {
                             if ui.selectable_label(name == &current_name, name).clicked() {
                                 let session = self.session_manager.sessions[i].clone();
+                                self.session_manager.save_last_session_id(&session.id);
                                 self.current_session = Some(LoadedSession::new(session));
                                 self.selected_file_index = 0;
                                 self.rebuild_schema();
@@ -361,13 +369,13 @@ impl JvApp {
                     if let Some(loaded) = &self.current_session {
                         let id = loaded.session.id.clone();
                         self.session_manager.delete_session(&id);
-                        self.current_session = if self.session_manager.sessions.is_empty() {
-                            let s = self.session_manager.create_session("Default Session");
-                            Some(LoadedSession::new(s))
+                        let new_session = if self.session_manager.sessions.is_empty() {
+                            self.session_manager.create_session("Default Session")
                         } else {
-                            let s = self.session_manager.sessions[0].clone();
-                            Some(LoadedSession::new(s))
+                            self.session_manager.sessions[0].clone()
                         };
+                        self.session_manager.save_last_session_id(&new_session.id);
+                        self.current_session = Some(LoadedSession::new(new_session));
                         self.selected_file_index = 0;
                         self.rebuild_schema();
                     }
@@ -1149,6 +1157,7 @@ impl eframe::App for JvApp {
                             let session = self
                                 .session_manager
                                 .create_session(&self.new_session_name);
+                            self.session_manager.save_last_session_id(&session.id);
                             self.current_session = Some(LoadedSession::new(session));
                             self.selected_file_index = 0;
                             self.new_session_name.clear();

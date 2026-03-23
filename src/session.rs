@@ -148,6 +148,7 @@ impl Session {
 pub struct SessionManager {
     pub sessions: Vec<Session>,
     data_dir: PathBuf,
+    pub last_session_id: Option<String>,
 }
 
 impl SessionManager {
@@ -159,8 +160,10 @@ impl SessionManager {
         let mut manager = Self {
             sessions: Vec::new(),
             data_dir,
+            last_session_id: None,
         };
         manager.load_sessions();
+        manager.load_last_session_id();
         manager
     }
 
@@ -218,6 +221,26 @@ impl SessionManager {
         self.save_session(session);
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == session.id) {
             *existing = session.clone();
+        }
+    }
+
+    fn state_path(&self) -> PathBuf {
+        self.data_dir.join("state.json")
+    }
+
+    fn load_last_session_id(&mut self) {
+        if let Ok(content) = std::fs::read_to_string(self.state_path()) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                self.last_session_id = val["last_session_id"].as_str().map(|s| s.to_string());
+            }
+        }
+    }
+
+    pub fn save_last_session_id(&self, id: &str) {
+        let val = serde_json::json!({ "last_session_id": id });
+        std::fs::create_dir_all(&self.data_dir).ok();
+        if let Ok(content) = serde_json::to_string(&val) {
+            std::fs::write(self.state_path(), content).ok();
         }
     }
 }
