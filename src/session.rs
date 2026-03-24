@@ -29,6 +29,15 @@ pub struct Session {
     pub hidden_fields: Vec<String>, // "StructName.field_name" format
     #[serde(default)]
     pub focus_list: Vec<Vec<String>>, // saved focus paths for jv browser
+    #[serde(default)]
+    pub saved_queries: Vec<SavedQuery>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedQuery {
+    pub name: String,
+    pub query: String,
+    pub mode: String, // "fuzzy", "contains", "exact", "off"
 }
 
 fn default_jaccard() -> f32 {
@@ -144,6 +153,7 @@ impl Session {
             enum_conversions: Vec::new(),
             hidden_fields: Vec::new(),
             focus_list: Vec::new(),
+            saved_queries: Vec::new(),
         }
     }
 }

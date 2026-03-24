@@ -262,6 +262,7 @@ impl JvApp {
         if let Some(loaded) = &app.current_session {
             app.applied_threshold = loaded.session.jaccard_threshold;
             app.browser_view.load_focus_list(&loaded.session.focus_list);
+            app.browser_view.load_saved_queries(&loaded.session.saved_queries);
         }
         tracing::info!("UI loaded");
         app
@@ -355,6 +356,7 @@ impl JvApp {
                                 let session = self.session_manager.sessions[i].clone();
                                 self.session_manager.save_last_session_id(&session.id);
                                 self.browser_view.load_focus_list(&session.focus_list);
+                                self.browser_view.load_saved_queries(&session.saved_queries);
                                 self.current_session = Some(LoadedSession::new(session));
                                 self.selected_file_index = 0;
                                 self.rebuild_schema();
@@ -918,6 +920,14 @@ impl JvApp {
                 if self.browser_view.take_focus_dirty() {
                     if let Some(loaded) = &mut self.current_session {
                         loaded.session.focus_list = self.browser_view.save_focus_list();
+                        self.session_manager.update_session(&loaded.session);
+                    }
+                }
+
+                // Save queries if changed
+                if self.browser_view.take_queries_dirty() {
+                    if let Some(loaded) = &mut self.current_session {
+                        loaded.session.saved_queries = self.browser_view.export_saved_queries();
                         self.session_manager.update_session(&loaded.session);
                     }
                 }

@@ -145,6 +145,33 @@ impl BrowserView {
         dirty
     }
 
+    /// Load saved queries into both filters.
+    pub fn load_saved_queries(&mut self, queries: &[crate::session::SavedQuery]) {
+        self.filter.load_queries(queries);
+        self.preview_filter.load_queries(queries);
+    }
+
+    /// Export saved queries (both filters are kept in sync by take_queries_dirty).
+    pub fn export_saved_queries(&self) -> Vec<crate::session::SavedQuery> {
+        self.filter.export_queries()
+    }
+
+    /// Returns true if any filter's saved queries changed. Syncs both filters.
+    pub fn take_queries_dirty(&mut self) -> bool {
+        let dirty = self.filter.queries_dirty || self.preview_filter.queries_dirty;
+        if dirty {
+            // Keep both filters in sync
+            if self.filter.queries_dirty {
+                self.preview_filter.saved_queries = self.filter.saved_queries.clone();
+            } else {
+                self.filter.saved_queries = self.preview_filter.saved_queries.clone();
+            }
+        }
+        self.filter.queries_dirty = false;
+        self.preview_filter.queries_dirty = false;
+        dirty
+    }
+
     pub fn invalidate(&mut self) {
         self.cache_key = 0;
         self.path.clear();
@@ -485,7 +512,7 @@ impl BrowserView {
                 ui.set_width(current_width);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &mid_title);
-                let filter_resp = self.filter.show(ui, "? to filter");
+                let filter_resp = self.filter.show(ui, "?");
 
                 // Filter + snap selection
                 let fr = self.filter.apply(
@@ -548,7 +575,7 @@ impl BrowserView {
                 ui.set_width(remaining);
                 ui.set_height(col_height);
                 crate::widgets::miller::pane_title(ui, &right_title);
-                self.preview_filter.show(ui, "ctrl-/ to filter");
+                self.preview_filter.show(ui, "ctrl-/");
                 self.render_preview_column(ui, selected_child, &current_entries, col_height);
             });
         });

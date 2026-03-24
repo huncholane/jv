@@ -223,7 +223,7 @@ impl SharedBrowserView {
                 ui.set_width(col_widths[1]);
                 ui.set_height(col_height);
                 render_pane_title(ui, &mid_title);
-                let filter_resp = self.filter.show(ui, "? to filter");
+                let filter_resp = self.filter.show(ui, "?");
 
                 // Filter + snap selection
                 let fr = self.filter.apply(
