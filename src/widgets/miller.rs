@@ -112,6 +112,7 @@ pub struct MillerFilterResponse {
 /// Shows a text input with placeholder. Focus with shortcut key, Escape unfocuses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterMode {
+    Off,      // no filtering
     Fuzzy,    // chars in order anywhere
     Contains, // case-insensitive substring
     Exact,    // case-insensitive full match
@@ -120,14 +121,16 @@ pub enum FilterMode {
 impl FilterMode {
     fn next(self) -> Self {
         match self {
+            FilterMode::Off => FilterMode::Fuzzy,
             FilterMode::Fuzzy => FilterMode::Contains,
             FilterMode::Contains => FilterMode::Exact,
-            FilterMode::Exact => FilterMode::Fuzzy,
+            FilterMode::Exact => FilterMode::Off,
         }
     }
 
     fn icon(self) -> &'static str {
         match self {
+            FilterMode::Off => egui_phosphor::regular::PROHIBIT,
             FilterMode::Fuzzy => egui_phosphor::regular::WAVES,
             FilterMode::Contains => egui_phosphor::regular::TEXTBOX,
             FilterMode::Exact => egui_phosphor::regular::EQUALS,
@@ -136,6 +139,7 @@ impl FilterMode {
 
     fn color(self) -> egui::Color32 {
         match self {
+            FilterMode::Off => crate::theme::CatppuccinMocha::OVERLAY0,
             FilterMode::Fuzzy => crate::theme::CatppuccinMocha::PEACH,
             FilterMode::Contains => crate::theme::CatppuccinMocha::BLUE,
             FilterMode::Exact => crate::theme::CatppuccinMocha::GREEN,
@@ -144,6 +148,7 @@ impl FilterMode {
 
     fn tooltip(self) -> &'static str {
         match self {
+            FilterMode::Off => "Off (ctrl-f to cycle)",
             FilterMode::Fuzzy => "Fuzzy (ctrl-f to cycle)",
             FilterMode::Contains => "Contains (ctrl-f to cycle)",
             FilterMode::Exact => "Exact (ctrl-f to cycle)",
@@ -263,7 +268,7 @@ impl MillerFilter {
     /// Match a label against the query using the current filter mode.
     /// Supports `|` to OR multiple terms (e.g. "start|report" matches either).
     pub fn matches(&self, label: &str) -> bool {
-        if self.query.is_empty() {
+        if self.mode == FilterMode::Off || self.query.is_empty() {
             return true;
         }
         self.query.split('|')
@@ -271,6 +276,7 @@ impl MillerFilter {
                 let term = term.trim();
                 if term.is_empty() { return false; }
                 match self.mode {
+                    FilterMode::Off => true,
                     FilterMode::Fuzzy => fuzzy_matches(term, label),
                     FilterMode::Contains => label.to_lowercase().contains(&term.to_lowercase()),
                     FilterMode::Exact => label.to_lowercase() == term.to_lowercase(),
