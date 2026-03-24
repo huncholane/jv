@@ -487,6 +487,7 @@ impl BrowserView {
 
         let col_height = avail.height();
         let at_root = self.path.is_empty();
+        let selection_before_render = self.selection;
         ui.horizontal(|ui| {
             ui.set_height(col_height);
 
@@ -579,6 +580,15 @@ impl BrowserView {
                 self.render_preview_column(ui, selected_child, &current_entries, col_height);
             });
         });
+
+        // If go_up restored selection but render clamped it (stale entries), restore it.
+        // This happens when going back to a level with more entries than the current one.
+        if selection_before_render > self.selection
+            && selection_before_render > 0
+            && self.restore_key.is_none()
+        {
+            self.selection = selection_before_render;
+        }
 
         // Handle click actions
         if let Some(idx) = clicked_entry {
