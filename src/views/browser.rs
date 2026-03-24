@@ -55,6 +55,8 @@ pub struct BrowserView {
     focused: Vec<Vec<PathSegment>>,
     pub focus_mode: bool,
     focus_dirty: bool,
+    // Bulk selection in focus root (indices into self.focused)
+    bulk_selected: std::collections::BTreeSet<usize>,
 }
 
 impl BrowserView {
@@ -75,6 +77,7 @@ impl BrowserView {
             focused: Vec::new(),
             focus_mode: false,
             focus_dirty: false,
+            bulk_selected: std::collections::BTreeSet::new(),
         }
     }
 
@@ -432,6 +435,61 @@ impl BrowserView {
                 self.focus_mode = !self.focus_mode;
                 self.path.clear();
                 self.selection = 0;
+                self.bulk_selected.clear();
+            }
+
+            // Bulk operations (focus root only)
+            if in_focus_root {
+                // Space: toggle bulk select on current item, move down
+                if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+                    if !self.bulk_selected.remove(&self.selection) {
+                        self.bulk_selected.insert(self.selection);
+                    }
+                    if self.selection + 1 < self.focused.len() {
+                        self.selection += 1;
+                    }
+                }
+                // Escape: clear bulk selection
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.bulk_selected.clear();
+                }
+                // 'p': move selected items below current position
+                if ui.input(|i| i.key_pressed(egui::Key::P) && !i.modifiers.ctrl) && !self.bulk_selected.is_empty() {
+                    // Collect selected items (in reverse order to preserve indices during removal)
+                    let mut selected_items: Vec<Vec<PathSegment>> = self.bulk_selected.iter().rev()
+                        .filter_map(|&idx| {
+                            if idx < self.focused.len() { Some(self.focused[idx].clone()) } else { None }
+                        })
+                        .collect();
+                    selected_items.reverse();
+                    // Remove selected from their current positions (reverse order)
+                    for &idx in self.bulk_selected.iter().rev() {
+                        if idx < self.focused.len() {
+                            self.focused.remove(idx);
+                        }
+                    }
+                    // Adjust insertion point (current selection may have shifted)
+                    let insert_at = (self.selection + 1).min(self.focused.len());
+                    // Insert after current position
+                    for (i, item) in selected_items.into_iter().enumerate() {
+                        self.focused.insert(insert_at + i, item);
+                    }
+                    self.bulk_selected.clear();
+                    self.focus_dirty = true;
+                }
+                // 'd': delete selected items from focus list
+                if ui.input(|i| i.key_pressed(egui::Key::D)) && !self.bulk_selected.is_empty() {
+                    for &idx in self.bulk_selected.iter().rev() {
+                        if idx < self.focused.len() {
+                            self.focused.remove(idx);
+                        }
+                    }
+                    self.bulk_selected.clear();
+                    if self.selection >= self.focused.len() && !self.focused.is_empty() {
+                        self.selection = self.focused.len() - 1;
+                    }
+                    self.focus_dirty = true;
+                }
             }
 
             // Copy selected value: c or Ctrl+C
@@ -803,6 +861,7 @@ impl BrowserView {
         let current_path = self.path.clone();
         let focused = self.focused.clone();
         let is_focus_root = self.focus_mode && self.path.is_empty();
+        let bulk_selected = self.bulk_selected.clone();
 
         // Map original selection index → filtered list position
         let filtered_pos = entries.iter().position(|(orig, _)| *orig == self.selection)
@@ -818,7 +877,12 @@ impl BrowserView {
                 let (orig_idx, entry) = &entries[i];
                 let (is_hovered, row_id) = crate::widgets::prev_frame_hover(ui.ctx(), ui.id(), i);
 
-                let bg = if is_selected {
+                let is_bulk = is_focus_root && bulk_selected.contains(orig_idx);
+                let bg = if is_bulk {
+                    egui::Color32::from_rgba_unmultiplied(
+                        CatppuccinMocha::MAUVE.r(), CatppuccinMocha::MAUVE.g(), CatppuccinMocha::MAUVE.b(), 30,
+                    )
+                } else if is_selected {
                     CatppuccinMocha::SURFACE0
                 } else if is_hovered {
                     egui::Color32::from_rgba_unmultiplied(
