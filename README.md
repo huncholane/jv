@@ -4,6 +4,26 @@ A native desktop JSON viewer with intelligent schema inference, cross-file compa
 
 Built with Rust and [egui](https://github.com/emilk/egui) for native performance — no Electron, no web runtime. Themed with Catppuccin Mocha.
 
+## Install
+
+jv releases prebuilt binaries in github. 
+
+### One Liner Install
+
+Uses curl to download prebuilt binary into `~/.local/jv` and symlinks
+`~/.local/bin/jv` to `~/.local/jv/bin/jv`. This can also be used for updating
+to latest version.
+
+```bash
+curl https://raw.githubusercontent.com/huncholane/jv/refs/heads/main/install | sh
+```
+
+Remember to add `~/.local/bin` to the path.
+
+```bash
+export PATH="$PATH:$HOME/.local/bin"
+```
+
 ## Features
 
 ### Four Modes

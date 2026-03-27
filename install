@@ -1,0 +1,25 @@
+#!/bin/bash
+# Author: Lane Henslee
+# Downloads jv using github release based on detected system into ~/.local/jv
+# Creates a symlink from ~/.local/bin/jv pointing to ~/.local/jv/bin/jv
+# User needs to add ~/.local/bin to PATH
+
+# Setup up for fresh install
+mkdir -p ~/.local
+rm -rf ~/.local/jv
+rm -f ~/.local/bin/jv
+
+# Determine architecture
+case "$(uname -s)$(uname -m)" in
+"Linuxx86_64") arch="linux-x86_64" ;;
+"Linuxaarch64") arch="linux-aarch64" ;;
+"Darwinx86_64") arch="macos-x86_64" ;;
+"Darwinarm64") arch="macos-aarch64" ;;
+*) echo -e "\033[31mUnsupported architecture. Try building from source." && exit 1 ;;
+esac
+url="https://github.com/huncholane/jv/releases/latest/download/jv-$arch.tar.gz"
+echo "Downloading from $url"
+
+# Download latest version
+curl -fsSL "$url" | tar xzvf - -C ~/.local/
+ln -s ~/.local/jv/bin/jv ~/.local/bin/jv
